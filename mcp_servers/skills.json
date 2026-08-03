@@ -1,0 +1,91 @@
+[
+  {
+    "name": "send_onboarding_email",
+    "display_name": "发送入职欢迎邮件",
+    "description": "给新员工发送入职欢迎邮件，自动查询邮箱并抄送HRBP",
+    "triggers": [
+      "入职邮件",
+      "欢迎邮件",
+      "发入职通知",
+      "welcome email",
+      "给.*发入职"
+    ],
+    "tools": [
+      "hris_search_employee",
+      "feishu_send_feishu_mail"
+    ],
+    "system_prompt": "用户想给新员工发入职欢迎邮件。\n1. 从对话中提取新员工姓名\n2. 用 hris_search_employee 查到该员工的邮箱\n3. 用 feishu_send_feishu_mail 发送邮件，主题为「欢迎加入公司！」，内容包含报到时间、需带材料、入职当天安排\n4. 回复用户告知发送结果",
+    "reply_hint": "邮件已发送，同时抄送了HRBP和直属上级。",
+    "examples": [
+      {
+        "user": "帮我给张三发入职欢迎邮件",
+        "assistant": "好的，查到张三的邮箱是 zhangsan@company.com，已发送入职欢迎邮件，抄送 HRBP 李四。"
+      }
+    ],
+    "enabled": true
+  },
+  {
+    "name": "probation_reminder",
+    "display_name": "试用期到期提醒",
+    "description": "查询即将试用期到期的员工列表并发送提醒",
+    "triggers": [
+      "试用期",
+      "转正提醒",
+      "试用到期",
+      "试用期到期"
+    ],
+    "tools": [
+      "hris_search_employee",
+      "hris_get_team_members",
+      "feishu_send_notification"
+    ],
+    "system_prompt": "用户想查看试用期到期情况。\n1. 确定用户关注的部门或范围\n2. 用 hris_get_team_members 获取员工列表\n3. 根据入职日期判断试用期是否即将到期（6个月试用期）\n4. 汇总将到期人员列表回复用户",
+    "reply_hint": "如有即将到期人员，建议提醒相关主管安排转正评估。",
+    "examples": [
+      {
+        "user": "技术部有哪些人试用期快到了",
+        "assistant": "技术部目前有2位员工试用期将在本月到期：张三（到期日6月15日）、王五（到期日6月28日）。建议通知相关主管准备转正评估。"
+      }
+    ],
+    "enabled": true
+  },
+  {
+    "name": "attendance_weekly_report",
+    "display_name": "部门考勤周报",
+    "description": "生成指定部门的周考勤汇总",
+    "triggers": [
+      "考勤周报",
+      "考勤汇总",
+      "出勤统计",
+      "考勤报表"
+    ],
+    "tools": [
+      "hris_get_team_members",
+      "feishu_get_my_attendance",
+      "feishu_write_sheet"
+    ],
+    "system_prompt": "用户想要生成部门考勤周报。\n1. 确定部门名称和日期范围\n2. 用 hris_get_team_members 获取部门成员\n3. 用 feishu_get_my_attendance 查询考勤数据\n4. 用 feishu_write_sheet 写入多维表格\n5. 回复用户表格链接",
+    "reply_hint": "考勤异常已标红，请HR核实。",
+    "examples": [],
+    "enabled": true
+  },
+  {
+    "name": "birthday_check",
+    "display_name": "员工生日查询",
+    "description": "查询本月或指定月份过生日的员工",
+    "triggers": [
+      "生日",
+      "过生日",
+      "birthday",
+      "生日祝福"
+    ],
+    "tools": [
+      "hris_get_team_members",
+      "hris_search_employee"
+    ],
+    "system_prompt": "用户想查询员工生日信息。\n1. 确定部门或范围\n2. 用 hris_get_team_members 获取员工列表\n3. 由于HR系统没有生日字段，请告知用户当前mock数据暂不支持生日查询，建议联系HRBP获取真实数据",
+    "reply_hint": "",
+    "examples": [],
+    "enabled": true
+  }
+]
