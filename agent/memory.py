@@ -91,27 +91,21 @@ class RedisSessionBuffer:
             self._redis = None
 
 
-# ── L2: PostgreSQL 对话历史 ──────────────────────────────────────────
+# ── L2: MySQL 对话历史 ───────────────────────────────────────────────
 
-class PostgresChatHistory:
-    """PostgreSQL 持久化，连接失败时静默降级。"""
+class MySQLChatHistory:
+    """MySQL 对话历史持久化，连接失败时静默降级。"""
 
-    def __init__(self, dsn: str | None = None):
-        self._dsn = dsn or config.postgres.url
-        self._pool = None
+    def __init__(self):
         self._available = True
 
-    async def _ensure_pool(self):
-        if not self._available:
-            return
-        if self._pool is None:
-            try:
-                import asyncpg
-                self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=3, timeout=3)
-            except Exception:
-                logger.warning("PostgreSQL unavailable, chat history will not be persisted")
-                self._available = False
-                self._pool = None
+    async def _get_pool(self):
+        from db.connection import get_pool
+        try:
+            return await get_pool()
+        except Exception:
+            self._available = False
+            return None
 
     async def save_message(
         self,
@@ -122,49 +116,45 @@ class PostgresChatHistory:
         intent: str = "",
         tool_calls: str = "",
     ):
-        await self._ensure_pool()
         if not self._available:
             return
         try:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO messages (session_id, user_id, role, content, intent, tool_calls, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, NOW())
-                    """,
-                    session_id, user_id, role, content, intent, tool_calls,
-                )
+            import uuid
+            pool = await self._get_pool()
+            if not pool:
+                return
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "INSERT INTO conversations (id, session_id, user_id, role, content, intent) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (uuid.uuid4().hex, session_id, user_id, role, content, intent),
+                    )
         except Exception:
             self._available = False
+            logger.warning("MySQL unavailable, chat history not persisted")
 
     async def get_history(self, session_id: str, limit: int = 50) -> list[dict]:
-        await self._ensure_pool()
         if not self._available:
             return []
         try:
-            async with self._pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT role, content, intent, tool_calls, created_at
-                    FROM messages
-                    WHERE session_id = $1
-                    ORDER BY created_at DESC
-                    LIMIT $2
-                    """,
-                    session_id, limit,
-                )
-                return [dict(r) for r in reversed(rows)]
+            import aiomysql
+            pool = await self._get_pool()
+            if not pool:
+                return []
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT role, content, intent, created_at FROM conversations WHERE session_id = %s ORDER BY created_at DESC LIMIT %s",
+                        (session_id, limit),
+                    )
+                    rows = await cur.fetchall()
+                    return [dict(r) for r in reversed(rows)]
         except Exception:
             self._available = False
             return []
 
     async def close(self):
-        if self._pool:
-            try:
-                await self._pool.close()
-            except Exception:
-                pass
-            self._pool = None
+        pass  # pool 由 db.connection 统一管理
 
 
 # ── 辅助：消息序列化 ─────────────────────────────────────────────────
@@ -184,7 +174,7 @@ def _msg_to_langchain(msg: dict) -> BaseMessage:
 # ── L3: LangChain SummaryBufferMemory ───────────────────────────────
 
 class MemoryManager:
-    """三层记忆管理器：Redis 缓冲 + PostgreSQL 持久化 + ConversationSummaryBufferMemory。
+    """三层记忆管理器：Redis 缓冲 + MySQL 持久化 + ConversationSummaryBufferMemory。
 
     基础设施不可用时自动降级，不阻塞对话。
     """
@@ -194,10 +184,9 @@ class MemoryManager:
         llm_api_key: str | None = None,
         llm_base_url: str | None = None,
         redis_url: str | None = None,
-        pg_dsn: str | None = None,
     ):
         self._session_buffer = RedisSessionBuffer(redis_url)
-        self._chat_history = PostgresChatHistory(pg_dsn)
+        self._chat_history = MySQLChatHistory()
         self._llm = ChatOpenAI(
             model=config.llm.chat_model,
             api_key=llm_api_key or config.llm.api_key,
