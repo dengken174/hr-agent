@@ -21,8 +21,14 @@ class RedisConfig:
 
 
 @dataclass
-class PostgresConfig:
-    url: str = os.getenv("DATABASE_URL", "postgresql://localhost:5432/hragent")
+class MySQLConfig:
+    host: str = os.getenv("MYSQL_HOST", "127.0.0.1")
+    port: int = int(os.getenv("MYSQL_PORT", "3306"))
+    user: str = os.getenv("MYSQL_USER", "root")
+    password: str = os.getenv("MYSQL_PASSWORD", "123456")
+    database: str = os.getenv("MYSQL_DATABASE", "hragent")
+    pool_min: int = 1
+    pool_max: int = 5
 
 
 @dataclass
@@ -84,7 +90,7 @@ class FeishuConfig:
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     redis: RedisConfig = field(default_factory=RedisConfig)
-    postgres: PostgresConfig = field(default_factory=PostgresConfig)
+    mysql: MySQLConfig = field(default_factory=MySQLConfig)
     es: ElasticsearchConfig = field(default_factory=ElasticsearchConfig)
     milvus: MilvusConfig = field(default_factory=MilvusConfig)
     jina: JinaConfig = field(default_factory=JinaConfig)
