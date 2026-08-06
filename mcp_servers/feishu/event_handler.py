@@ -171,27 +171,31 @@ class EventRouter:
         return None
 
     async def _handle_message(self, event: FeishuEvent) -> FeishuReply | None:
-        """处理文本消息 — 核心对话入口。
-
-        实际部署时，这里调用 agent/executor.py 的 HRAgent.chat()。
-        """
+        """处理文本消息 — 调用 Agent 真实对话。"""
         if not event.content.strip():
             return None
 
-        if event.source_type == "group_chat":
-            # 群聊: 对敏感查询做脱敏
-            return FeishuReply(
-                chat_id=event.chat_id, message_id=event.message_id,
-                content=f"[群聊模式] 收到 @{event.sender_name} 的问题，处理中...\n\n（Agent 回复将在此处）",
-                content_type="text", at_sender=True,
+        try:
+            from agent.executor import hr_agent
+            if hr_agent._mcp_client is None:
+                await hr_agent.start()
+
+            reply_text = await hr_agent.chat(
+                user_message=event.content,
+                session_id=f"feishu-{event.chat_id}",
+                user_id=hash(event.sender_id) % 10000,
+                user_role="employee",
             )
-        else:
-            # 单聊: 完整 Agent 对话
-            return FeishuReply(
-                chat_id=event.chat_id, message_id=event.message_id,
-                content=f"[单聊模式] @{event.sender_name}，正在为您处理...\n\n（Agent 回复将在此处）",
-                content_type="text", at_sender=False,
-            )
+        except Exception:
+            logger.exception("Agent chat failed")
+            reply_text = "抱歉，我暂时无法处理您的请求，请稍后再试。"
+
+        at_sender = event.source_type == "group_chat"
+        return FeishuReply(
+            chat_id=event.chat_id, message_id=event.message_id,
+            content=reply_text, content_type="text", at_sender=at_sender,
+            reply_to_message_id=event.message_id,
+        )
 
     async def _handle_reaction(self, event: FeishuEvent) -> FeishuReply | None:
         """处理表情回复 → 快捷审批。
@@ -258,10 +262,29 @@ async def handle_webhook(raw_body: dict, headers: dict) -> dict:
 
 
 async def _send_reply_via_api(reply: FeishuReply):
-    """通过飞书开放平台 API 发送回复消息。
+    """通过飞书开放平台 API 发送回复消息。"""
+    from mcp_servers.feishu.client import feishu_client
 
-    生产环境调用飞书 发送消息 API:
-      POST https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reply
-    """
-    logger.info("Reply to chat=%s msg=%s: %s", reply.chat_id, reply.message_id, reply.content[:80])
-    # TODO: 生产环境对接飞书发送消息 API
+    if not feishu_client.is_configured:
+        logger.warning("Feishu client not configured, reply not sent: %s", reply.content[:80])
+        return
+
+    body = {
+        "content": json.dumps({"text": reply.content}, ensure_ascii=False),
+        "msg_type": "text",
+    }
+
+    try:
+        if reply.reply_to_message_id:
+            await feishu_client.post(
+                f"/im/v1/messages/{reply.reply_to_message_id}/reply",
+                body=body,
+            )
+        else:
+            await feishu_client.post(
+                "/im/v1/messages?receive_id_type=chat_id",
+                body={**body, "receive_id": reply.chat_id},
+            )
+        logger.info("Feishu reply sent to chat=%s", reply.chat_id)
+    except Exception:
+        logger.exception("Failed to send feishu reply")

@@ -90,21 +90,14 @@ async def get_stats(user: dict = Depends(get_current_user)):
 
 @router.post("/feishu/webhook")
 async def feishu_webhook(request: Request):
-    """飞书事件订阅 Webhook 端点。
+    """飞书事件订阅 Webhook 端点。"""
+    from mcp_servers.feishu.event_handler import handle_webhook
 
-    当前为占位实现，后续接入真实飞书事件处理器。
-    """
     try:
         body = await request.json()
-        event_type = body.get("header", {}).get("event_type", "")
-
-        # URL 验证（飞书开放平台首次配置时）
-        if "challenge" in body:
-            return {"challenge": body["challenge"]}
-
-        logger.info("Feishu webhook received: %s", event_type)
-        return {"status": "ok"}
-
+        headers = dict(request.headers)
+        result = await handle_webhook(body, headers)
+        return result
     except Exception as e:
         logger.exception("Feishu webhook error")
         raise HTTPException(status_code=400, detail=str(e))
