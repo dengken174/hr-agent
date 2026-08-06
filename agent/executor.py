@@ -182,40 +182,70 @@ class HRAgent:
         user_role: str = "employee",
     ) -> AsyncIterator[str]:
         """流式对话 — 逐 token 产出回复。"""
+        # 0. 热加载 Skill
+        skill_manager.check_reload()
+
+        # 1. 意图分类
         intent = await intent_classifier.classify(user_message)
+
+        # 2. Tool 路由
         tools = route_tools(intent, self._all_tools)
 
-        if intent.intent == "general_chat" or not tools:
-            async for chunk in self._direct_reply_stream(user_message, user_role):
+        # 3. 自定义 Skill 匹配
+        matched_skill = skill_manager.match(user_message)
+        if matched_skill and matched_skill.tools:
+            all_names = {t.name for t in self._all_tools}
+            skill_tool_names = skill_manager.get_tool_names(matched_skill, all_names)
+            skill_tools = [t for t in self._all_tools if t.name in skill_tool_names]
+            existing_names = {t.name for t in tools}
+            for st in skill_tools:
+                if st.name not in existing_names:
+                    tools.append(st)
+
+        # 4. general_chat 且无 Skill 匹配 → 直接 LLM 流式回复
+        if (intent.intent == "general_chat" and not matched_skill) or not tools:
+            async for chunk in self._direct_reply_stream_with_skill(user_message, user_role, matched_skill):
                 yield chunk
             return
 
+        # 5. 构建 memory + prompt
         self._memory = self._memory_mgr.create_summary_memory()
         await self._memory_mgr.load_context(session_id, self._memory)
+        prompt = self._build_prompt_with_skill(user_role, matched_skill)
+        user_input = user_message
+        if matched_skill and matched_skill.reply_hint:
+            user_input = f"{user_message}\n\n[系统提示：{matched_skill.reply_hint}]"
 
-        agent = create_tool_calling_agent(
-            llm=self._llm,
-            tools=tools,
-            prompt=self._build_prompt(user_role),
-        )
+        # 6. 创建 AgentExecutor
+        agent = create_tool_calling_agent(llm=self._llm, tools=tools, prompt=prompt)
         self._agent_executor = AgentExecutor(
-            agent=agent,
-            tools=tools,
-            memory=self._memory,
+            agent=agent, tools=tools, memory=self._memory,
             max_iterations=config.agent_max_iterations,
-            verbose=True,
-            handle_parsing_errors=True,
+            verbose=True, handle_parsing_errors=True,
         )
 
-        result = await self._agent_executor.ainvoke({"input": user_message})
-        output = result.get("output", "")
-        yield output
+        # 7. 使用 astream_events 实现 token 级流式
+        full_output = ""
+        async for event in self._agent_executor.astream_events(
+            {"input": user_input}, version="v2",
+        ):
+            kind = event.get("event", "")
+            if kind == "on_chat_model_stream":
+                chunk = event.get("data", {}).get("chunk")
+                if chunk and hasattr(chunk, "content") and chunk.content:
+                    full_output += chunk.content
+                    yield chunk.content
 
+        # 8. 如果流式没产出，回退 ainvoke
+        if not full_output:
+            result = await self._agent_executor.ainvoke({"input": user_input})
+            full_output = result.get("output", "")
+            yield full_output
+
+        # 9. 持久化
         await self._memory_mgr.save_turn(
-            session_id=session_id,
-            user_id=user_id,
-            user_message=user_message,
-            assistant_message=output,
+            session_id=session_id, user_id=user_id,
+            user_message=user_message, assistant_message=full_output,
             intent=intent.intent,
         )
 
@@ -278,6 +308,24 @@ class HRAgent:
         stream = self._llm.astream([
             {"role": "system", "content": self._build_system_text(user_role)},
             {"role": "user", "content": user_message},
+        ])
+        async for chunk in stream:
+            if chunk.content:
+                yield chunk.content
+
+    async def _direct_reply_stream_with_skill(
+        self, user_message: str, user_role: str, skill: CustomSkill | None
+    ) -> AsyncIterator[str]:
+        """带 Skill 上下文的流式无 Tool 对话。"""
+        system_text = self._build_system_text(user_role)
+        if skill:
+            system_text += f"\n\n## 自定义业务技能: {skill.display_name}\n{skill.system_prompt}"
+        user_input = user_message
+        if skill and skill.reply_hint:
+            user_input = f"{user_message}\n\n[系统提示：{skill.reply_hint}]"
+        stream = self._llm.astream([
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_input},
         ])
         async for chunk in stream:
             if chunk.content:
