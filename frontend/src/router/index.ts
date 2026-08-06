@@ -1,15 +1,52 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory } from 'vue-router'
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHashHistory(),
   routes: [
-    { path: '/', redirect: '/chat' },
-    { path: '/chat', name: 'Chat', component: () => import('../views/ChatView.vue'), meta: { title: '智能对话', icon: 'ChatDotRound' } },
-    { path: '/skills', name: 'Skills', component: () => import('../views/SkillManager.vue'), meta: { title: '技能管理', icon: 'SetUp' } },
-    { path: '/approvals', name: 'Approvals', component: () => import('../views/ApprovalView.vue'), meta: { title: '审批管理', icon: 'DocumentChecked' } },
-    { path: '/knowledge', name: 'Knowledge', component: () => import('../views/KnowledgeView.vue'), meta: { title: '知识库', icon: 'Collection' } },
-    { path: '/eval', name: 'Evaluation', component: () => import('../views/EvaluationView.vue'), meta: { title: 'RAG 评测', icon: 'DataAnalysis' } },
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('../views/LoginView.vue'),
+      meta: { noAuth: true },
+    },
+    {
+      path: '/',
+      redirect: '/chat',
+    },
+    {
+      path: '/chat',
+      name: 'chat',
+      component: () => import('../views/ChatView.vue'),
+    },
+    {
+      path: '/approval',
+      name: 'approval',
+      component: () => import('../views/ApprovalView.vue'),
+    },
+    {
+      path: '/knowledge',
+      name: 'knowledge',
+      component: () => import('../views/KnowledgeView.vue'),
+    },
+    {
+      path: '/eval',
+      name: 'eval',
+      component: () => import('../views/EvalView.vue'),
+    },
   ],
+})
+
+router.beforeEach((to, _from, next) => {
+  if (to.meta.noAuth) {
+    next()
+    return
+  }
+  const token = localStorage.getItem('token')
+  if (!token) {
+    next('/login')
+  } else {
+    next()
+  }
 })
 
 export default router

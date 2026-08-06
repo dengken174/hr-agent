@@ -1,74 +1,171 @@
+<template>
+  <div v-if="!userStore.isLoggedIn" class="app-plain">
+    <router-view />
+  </div>
+  <div v-else class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>HR Agent</h2>
+        <span class="sidebar-subtitle">智能助手</span>
+      </div>
+      <el-menu
+        :default-active="activeMenu"
+        router
+        background-color="#1d1e2c"
+        text-color="#a0a4b8"
+        active-text-color="#fff"
+        class="sidebar-menu"
+      >
+        <el-menu-item index="/chat">
+          <el-icon><ChatDotRound /></el-icon>
+          <span>对话</span>
+        </el-menu-item>
+        <el-menu-item index="/approval">
+          <el-icon><Checked /></el-icon>
+          <span>审批</span>
+        </el-menu-item>
+        <el-menu-item index="/knowledge">
+          <el-icon><Document /></el-icon>
+          <span>知识库</span>
+        </el-menu-item>
+        <el-menu-item index="/eval">
+          <el-icon><DataAnalysis /></el-icon>
+          <span>RAG 评测</span>
+        </el-menu-item>
+      </el-menu>
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <el-avatar :size="32">{{ userStore.user?.display_name?.[0] }}</el-avatar>
+          <div class="user-meta">
+            <span class="user-name">{{ userStore.user?.display_name }}</span>
+            <span class="user-role">{{ roleLabel }}</span>
+          </div>
+        </div>
+        <el-button text size="small" @click="handleLogout">
+          <el-icon><SwitchButton /></el-icon>
+        </el-button>
+      </div>
+    </aside>
+    <main class="main-content">
+      <router-view />
+    </main>
+  </div>
+</template>
+
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { getMe } from './api'
+import { useUserStore } from './stores/user'
 
 const router = useRouter()
 const route = useRoute()
-const activeMenu = ref('/chat')
-const user = ref({ display_name: '', role: '' })
+const userStore = useUserStore()
 
-watch(() => route.path, (p) => { activeMenu.value = p })
+const activeMenu = computed(() => route.path)
 
-onMounted(async () => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    try { const { data } = await getMe(); user.value = data }
-    catch { localStorage.clear() }
+const roleLabel = computed(() => {
+  const map: Record<string, string> = {
+    hr_admin: 'HR 管理员',
+    employee: '员工',
+    interviewer: '面试者',
   }
+  return map[userStore.user?.role || ''] || userStore.user?.role || ''
 })
 
-const roleLabel = (r: string) => ({ hr_admin: 'HR 管理员', employee: '员工', interviewer: '面试者' }[r] || r)
-
-const navItems = [
-  { path: '/chat', title: '智能对话', icon: 'ChatDotRound' },
-  { path: '/skills', title: '技能管理', icon: 'SetUp' },
-  { path: '/approvals', title: '审批管理', icon: 'DocumentChecked' },
-  { path: '/knowledge', title: '知识库', icon: 'Collection' },
-  { path: '/eval', title: 'RAG 评测', icon: 'DataAnalysis' },
-]
+function handleLogout() {
+  userStore.logout()
+  router.push('/login')
+}
 </script>
 
-<template>
-  <el-container style="height:100vh">
-    <!-- 侧边栏 -->
-    <el-aside :width="'220px'" style="background:#001529;overflow:hidden">
-      <div style="padding:20px 16px 12px;display:flex;align-items:center;gap:10px">
-        <div style="width:36px;height:36px;background:var(--el-color-primary);border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:bold;font-size:18px">HR</div>
-        <div>
-          <div style="color:#fff;font-size:15px;font-weight:600;line-height:1.2">AI Assistant</div>
-          <div style="color:#ffffff73;font-size:11px">智能 HR 助手</div>
-        </div>
-      </div>
+<style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
 
-      <el-menu
-        :default-active="activeMenu"
-        background-color="#001529"
-        text-color="#ffffffa6"
-        active-text-color="#fff"
-        style="border-right:none"
-        @select="(path: string) => router.push(path)"
-      >
-        <el-menu-item v-for="item in navItems" :key="item.path" :index="item.path" style="margin:2px 8px;border-radius:6px">
-          <el-icon style="margin-right:8px"><component :is="item.icon" /></el-icon>
-          <span>{{ item.title }}</span>
-        </el-menu-item>
-      </el-menu>
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #f0f2f5;
+  color: #303133;
+}
 
-      <div style="position:absolute;bottom:16px;left:0;right:0;padding:0 16px">
-        <div v-if="user.display_name" style="color:#ffffff73;font-size:12px;text-align:center;padding:8px;background:#ffffff0a;border-radius:6px">
-          {{ user.display_name }} · {{ roleLabel(user.role) }}
-        </div>
-      </div>
-    </el-aside>
+.app-layout {
+  display: flex;
+  height: 100vh;
+}
 
-    <!-- 主内容区 -->
-    <el-main style="padding:0;background:var(--bg);overflow:hidden">
-      <router-view v-slot="{ Component }">
-        <transition name="fade" mode="out-in">
-          <component :is="Component" />
-        </transition>
-      </router-view>
-    </el-main>
-  </el-container>
-</template>
+.sidebar {
+  width: 220px;
+  background: #1d1e2c;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.sidebar-header {
+  padding: 20px 16px 12px;
+  color: #fff;
+}
+
+.sidebar-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.sidebar-subtitle {
+  font-size: 12px;
+  color: #6b6f85;
+}
+
+.sidebar-menu {
+  border-right: none;
+  flex: 1;
+}
+
+.sidebar-menu .el-menu-item {
+  height: 46px;
+  line-height: 46px;
+}
+
+.sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid #2a2b3d;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-meta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.user-name {
+  color: #e0e1ea;
+  font-size: 13px;
+}
+
+.user-role {
+  color: #6b6f85;
+  font-size: 11px;
+}
+
+.main-content {
+  flex: 1;
+  overflow: auto;
+  padding: 20px;
+}
+
+.app-plain {
+  height: 100vh;
+}
+</style>
