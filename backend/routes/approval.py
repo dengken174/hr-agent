@@ -7,9 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from backend.middleware import get_current_user
 from backend.models import ApprovalAction, ApprovalItem
+from db.repositories import ApprovalRepo
 
 logger = logging.getLogger("backend.routes.approval")
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
+
+_approval_repo = ApprovalRepo()
 
 # ── Mock 审批数据 ────────────────────────────────────────────────────
 
@@ -65,15 +68,36 @@ MOCK_APPROVALS: list[dict] = [
 ]
 
 
+def _to_approval_item(row: dict) -> dict:
+    """将 MySQL 行转为与 MOCK_APPROVALS 兼容的格式。"""
+    return {
+        "id": row["id"],
+        "type": row["type"],
+        "applicant": f"用户{row['applicant_id']}",
+        "applicant_id": row["applicant_id"],
+        "department": "",
+        "title": row["title"],
+        "detail": row.get("body", {}) if isinstance(row.get("body"), dict) else {},
+        "status": row["status"],
+        "created_at": row.get("created_at", ""),
+        "updated_at": row.get("updated_at", ""),
+    }
+
+
 @router.get("", response_model=list[ApprovalItem])
 async def list_approvals(
     status: str = "",
     user: dict = Depends(get_current_user),
 ):
     """查询审批列表，可按状态过滤。"""
-    items = MOCK_APPROVALS
-    if status:
-        items = [a for a in items if a["status"] == status]
+    try:
+        rows = await _approval_repo.list_all(status)
+        items = [_to_approval_item(r) for r in rows]
+    except Exception:
+        logger.warning("MySQL unavailable, falling back to mock")
+        items = MOCK_APPROVALS
+        if status:
+            items = [a for a in items if a["status"] == status]
 
     if user["role"] == "employee":
         items = [a for a in items if a["applicant_id"] == user["user_id"]]
@@ -86,7 +110,11 @@ async def pending_approvals(user: dict = Depends(get_current_user)):
     """待审批列表（HR 专用）。"""
     if user["role"] not in ("hr_admin",):
         raise HTTPException(status_code=403, detail="仅 HR 管理员")
-    items = [a for a in MOCK_APPROVALS if a["status"] == "pending"]
+    try:
+        rows = await _approval_repo.list_all("pending")
+        items = [_to_approval_item(r) for r in rows]
+    except Exception:
+        items = [a for a in MOCK_APPROVALS if a["status"] == "pending"]
     return [ApprovalItem(**a) for a in items]
 
 
@@ -100,11 +128,21 @@ async def action_approval(
     if user["role"] != "hr_admin":
         raise HTTPException(status_code=403, detail="仅 HR 管理员")
 
+    new_status = "approved" if action.action == "approve" else "rejected"
+
+    try:
+        ok = await _approval_repo.update_status(approval_id, new_status, user["user_id"], action.comment)
+        if ok:
+            row = await _approval_repo.get_by_id(approval_id)
+            return ApprovalItem(**_to_approval_item(row))
+    except Exception:
+        logger.warning("MySQL unavailable for approval action")
+
     for a in MOCK_APPROVALS:
         if a["id"] == approval_id:
             if a["status"] != "pending":
                 raise HTTPException(status_code=400, detail="该审批已处理")
-            a["status"] = action.action + "d" if action.action == "approve" else action.action
+            a["status"] = new_status
             a["updated_at"] = datetime.now(timezone.utc).isoformat()
             logger.info("HR %s %sd approval: %s", user["display_name"], action.action, approval_id)
             return ApprovalItem(**a)
@@ -115,7 +153,18 @@ async def action_approval(
 @router.get("/stats")
 async def approval_stats(user: dict = Depends(get_current_user)):
     """审批统计。"""
-    pending = sum(1 for a in MOCK_APPROVALS if a["status"] == "pending")
-    approved = sum(1 for a in MOCK_APPROVALS if a["status"] == "approved")
-    rejected = sum(1 for a in MOCK_APPROVALS if a["status"] == "rejected")
-    return {"pending": pending, "approved": approved, "rejected": rejected, "total": len(MOCK_APPROVALS)}
+    try:
+        stats = await _approval_repo.get_stats()
+        return {
+            "pending": stats.get("pending", 0) or 0,
+            "approved": stats.get("approved", 0) or 0,
+            "rejected": stats.get("rejected", 0) or 0,
+            "total": stats.get("total", 0) or 0,
+        }
+    except Exception:
+        return {
+            "pending": sum(1 for a in MOCK_APPROVALS if a["status"] == "pending"),
+            "approved": sum(1 for a in MOCK_APPROVALS if a["status"] == "approved"),
+            "rejected": sum(1 for a in MOCK_APPROVALS if a["status"] == "rejected"),
+            "total": len(MOCK_APPROVALS),
+        }

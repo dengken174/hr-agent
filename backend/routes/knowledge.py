@@ -7,9 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from backend.middleware import get_current_user
 from backend.models import KnowledgeDoc, KnowledgeSearchRequest, KnowledgeSearchResult
+from db.repositories import KnowledgeRepo
 
 logger = logging.getLogger("backend.routes.knowledge")
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+
+_knowledge_repo = KnowledgeRepo()
 
 # ── Mock 知识库数据 ──────────────────────────────────────────────────
 
@@ -68,22 +71,36 @@ MOCK_DOCS: list[dict] = [
 @router.get("", response_model=list[KnowledgeDoc])
 async def list_docs(category: str = "", user: dict = Depends(get_current_user)):
     """列出知识库文档，可按分类过滤。"""
-    docs = MOCK_DOCS
-    if category:
-        docs = [d for d in docs if d["category"] == category]
-    return [KnowledgeDoc(**d) for d in docs]
+    try:
+        docs = await _knowledge_repo.list_all(category)
+        return [KnowledgeDoc(**d) for d in docs]
+    except Exception:
+        logger.warning("MySQL unavailable, falling back to mock")
+        docs = MOCK_DOCS
+        if category:
+            docs = [d for d in docs if d["category"] == category]
+        return [KnowledgeDoc(**d) for d in docs]
 
 
 @router.get("/categories")
 async def list_categories():
     """列出所有分类。"""
-    cats = sorted(set(d["category"] for d in MOCK_DOCS))
-    return [{"value": c, "label": {"policy": "政策制度", "benefit": "福利待遇", "guide": "流程指南", "faq": "常见问题"}.get(c, c)} for c in cats]
+    try:
+        cats = await _knowledge_repo.get_categories()
+        return [{"value": c, "label": {"policy": "政策制度", "benefit": "福利待遇", "guide": "流程指南", "faq": "常见问题"}.get(c, c)} for c in cats]
+    except Exception:
+        cats = sorted(set(d["category"] for d in MOCK_DOCS))
+        return [{"value": c, "label": {"policy": "政策制度", "benefit": "福利待遇", "guide": "流程指南", "faq": "常见问题"}.get(c, c)} for c in cats]
 
 
 @router.post("/search", response_model=list[KnowledgeSearchResult])
 async def search_knowledge(req: KnowledgeSearchRequest, user: dict = Depends(get_current_user)):
-    """关键词搜索知识库（mock BM25 模拟）。"""
+    """关键词搜索知识库。"""
+    try:
+        return [KnowledgeSearchResult(**r) for r in await _knowledge_repo.search(req.query, req.top_k)]
+    except Exception:
+        logger.warning("MySQL unavailable for search, falling back to mock")
+
     results = []
     query_lower = req.query.lower()
     for doc in MOCK_DOCS:
@@ -119,12 +136,17 @@ async def create_doc(data: KnowledgeDoc, user: dict = Depends(get_current_user))
     """新增知识库文档。"""
     if user["role"] != "hr_admin":
         raise HTTPException(status_code=403, detail="仅 HR 管理员")
-    import uuid
-    doc = data.model_dump()
-    doc["id"] = doc["id"] or f"K{uuid.uuid4().hex[:6].upper()}"
-    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
-    MOCK_DOCS.append(doc)
-    return KnowledgeDoc(**doc)
+    try:
+        doc = await _knowledge_repo.create(data.model_dump())
+        return KnowledgeDoc(**doc)
+    except Exception:
+        logger.warning("MySQL unavailable for create, falling back to mock")
+        import uuid
+        doc = data.model_dump()
+        doc["id"] = doc["id"] or f"K{uuid.uuid4().hex[:6].upper()}"
+        doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+        MOCK_DOCS.append(doc)
+        return KnowledgeDoc(**doc)
 
 
 @router.put("/{doc_id}", response_model=KnowledgeDoc)
@@ -132,13 +154,19 @@ async def update_doc(doc_id: str, data: KnowledgeDoc, user: dict = Depends(get_c
     """更新知识库文档。"""
     if user["role"] != "hr_admin":
         raise HTTPException(status_code=403, detail="仅 HR 管理员")
-    for i, d in enumerate(MOCK_DOCS):
-        if d["id"] == doc_id:
-            updated = data.model_dump()
-            updated["id"] = doc_id
-            updated["updated_at"] = datetime.now(timezone.utc).isoformat()
-            MOCK_DOCS[i] = updated
-            return KnowledgeDoc(**updated)
+    try:
+        doc = await _knowledge_repo.update(doc_id, data.model_dump())
+        if doc:
+            return KnowledgeDoc(**doc)
+    except Exception:
+        logger.warning("MySQL unavailable for update, falling back to mock")
+        for i, d in enumerate(MOCK_DOCS):
+            if d["id"] == doc_id:
+                updated = data.model_dump()
+                updated["id"] = doc_id
+                updated["updated_at"] = datetime.now(timezone.utc).isoformat()
+                MOCK_DOCS[i] = updated
+                return KnowledgeDoc(**updated)
     raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
 
 
@@ -147,8 +175,14 @@ async def delete_doc(doc_id: str, user: dict = Depends(get_current_user)):
     """删除知识库文档。"""
     if user["role"] != "hr_admin":
         raise HTTPException(status_code=403, detail="仅 HR 管理员")
-    for i, d in enumerate(MOCK_DOCS):
-        if d["id"] == doc_id:
-            MOCK_DOCS.pop(i)
+    try:
+        ok = await _knowledge_repo.delete(doc_id)
+        if ok:
             return {"status": "deleted", "id": doc_id}
+    except Exception:
+        logger.warning("MySQL unavailable for delete, falling back to mock")
+        for i, d in enumerate(MOCK_DOCS):
+            if d["id"] == doc_id:
+                MOCK_DOCS.pop(i)
+                return {"status": "deleted", "id": doc_id}
     raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
