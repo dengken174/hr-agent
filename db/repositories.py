@@ -52,6 +52,33 @@ class ConversationRepo:
                 rows = await cur.fetchall()
                 return list(reversed(rows))
 
+    async def list_sessions(self, user_id: int) -> list[dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("""
+                    SELECT
+                        session_id,
+                        (SELECT content FROM conversations c2
+                         WHERE c2.session_id = c1.session_id AND c2.role = 'user'
+                         ORDER BY c2.created_at ASC LIMIT 1
+                        ) AS title,
+                        COUNT(*) AS message_count,
+                        MAX(created_at) AS updated_at
+                    FROM conversations c1
+                    WHERE user_id = %s
+                    GROUP BY session_id
+                    ORDER BY updated_at DESC
+                    LIMIT 50
+                """, (user_id,))
+                rows = await cur.fetchall()
+                for r in rows:
+                    if r.get("title") and len(r["title"]) > 20:
+                        r["title"] = r["title"][:20] + "..."
+                    if r.get("updated_at"):
+                        r["updated_at"] = r["updated_at"].strftime('%Y-%m-%dT%H:%M:%S')
+                return rows
+
 
 class ApprovalRepo:
     async def list_all(self, status: str = "") -> list[dict]:
