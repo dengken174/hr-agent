@@ -60,7 +60,7 @@ class ConversationRepo:
                     SELECT
                         session_id,
                         (SELECT content FROM conversations c2
-                         WHERE c2.session_id = c1.session_id AND c2.role = 'user'
+                         WHERE c2.session_id = c1.session_id AND c2.role = 'user' AND c2.user_id = c1.user_id
                          ORDER BY c2.created_at ASC LIMIT 1
                         ) AS title,
                         COUNT(*) AS message_count,
