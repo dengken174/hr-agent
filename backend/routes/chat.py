@@ -83,3 +83,28 @@ async def chat_sync(req: ChatRequest, user: dict = Depends(get_current_user)):
         logger.warning("Failed to save conversation to MySQL")
 
     return ChatResponse(reply=reply, session_id=req.session_id)
+
+
+@router.get("/sessions")
+async def list_sessions(user: dict = Depends(get_current_user)):
+    """返回当前用户的所有会话列表。"""
+    try:
+        sessions = await _conv_repo.list_sessions(user_id=user["user_id"])
+        return sessions
+    except Exception:
+        logger.warning("Failed to list sessions, returning empty")
+        return []
+
+
+@router.get("/history")
+async def get_history(session_id: str, user: dict = Depends(get_current_user)):
+    """返回指定会话的对话历史。"""
+    try:
+        messages = await _conv_repo.get_history(session_id=session_id)
+        return [
+            {"role": m["role"], "content": m["content"], "created_at": str(m.get("created_at", ""))}
+            for m in messages
+        ]
+    except Exception:
+        logger.warning("Failed to get history for session %s", session_id)
+        return []

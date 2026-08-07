@@ -1,85 +1,115 @@
 <template>
-  <div class="chat-view">
-    <div class="chat-header">
-      <h3>智能对话</h3>
-      <el-button text size="small" @click="chatStore.clearMessages()">
-        <el-icon><Delete /></el-icon>
-        清空对话
-      </el-button>
-    </div>
+  <div class="chat-layout">
+    <aside class="session-sidebar" :class="{ collapsed: chatStore.sidebarCollapsed }">
+      <div class="sidebar-top">
+        <el-button type="primary" size="small" @click="chatStore.newSession()" style="width: 100%">
+          <el-icon><Plus /></el-icon>
+          新对话
+        </el-button>
+      </div>
+      <div class="session-list">
+        <div
+          v-for="s in chatStore.sessions"
+          :key="s.session_id"
+          class="session-item"
+          :class="{ active: s.session_id === chatStore.sessionId }"
+          @click="chatStore.loadHistory(s.session_id)"
+        >
+          <div class="session-title">{{ s.title || '新对话' }}</div>
+          <div class="session-meta">
+            <span>{{ s.message_count }} 条</span>
+            <span>{{ formatSessionTime(s.updated_at) }}</span>
+          </div>
+        </div>
+        <el-empty v-if="chatStore.sessions.length === 0" description="暂无对话" :image-size="48" />
+      </div>
+    </aside>
 
-    <div class="chat-messages" ref="msgContainer">
-      <div v-if="chatStore.messages.length === 0" class="chat-empty">
-        <el-empty description="发送消息开始对话" />
-        <div class="quick-prompts">
-          <el-tag
-            v-for="q in quickQuestions"
-            :key="q"
-            class="prompt-tag"
-            @click="handleQuick(q)"
-          >
-            {{ q }}
-          </el-tag>
+    <div class="chat-main">
+      <div class="chat-header">
+        <el-button text size="small" @click="chatStore.sidebarCollapsed = !chatStore.sidebarCollapsed">
+          <el-icon><Fold /></el-icon>
+        </el-button>
+        <h3>智能对话</h3>
+        <el-button text size="small" @click="chatStore.clearMessages()">
+          <el-icon><Delete /></el-icon>
+          清空对话
+        </el-button>
+      </div>
+
+      <div class="chat-messages" ref="msgContainer">
+        <div v-if="chatStore.messages.length === 0" class="chat-empty">
+          <el-empty description="发送消息开始对话" />
+          <div class="quick-prompts">
+            <el-tag
+              v-for="q in quickQuestions"
+              :key="q"
+              class="prompt-tag"
+              @click="handleQuick(q)"
+            >
+              {{ q }}
+            </el-tag>
+          </div>
+        </div>
+
+        <div
+          v-for="msg in chatStore.messages"
+          :key="msg.id"
+          class="message-row"
+          :class="msg.role"
+        >
+          <div class="msg-avatar">
+            <el-avatar :size="32" v-if="msg.role === 'user'">
+              {{ userStore.user?.display_name?.[0] }}
+            </el-avatar>
+            <el-avatar :size="32" v-else style="background: #409eff">
+              <el-icon><Service /></el-icon>
+            </el-avatar>
+          </div>
+          <div class="msg-bubble" v-html="renderMarkdown(msg.content)" />
+        </div>
+
+        <div v-if="chatStore.isStreaming" class="message-row assistant">
+          <div class="msg-avatar">
+            <el-avatar :size="32" style="background: #409eff">
+              <el-icon><Service /></el-icon>
+            </el-avatar>
+          </div>
+          <div class="msg-bubble typing">
+            <span class="typing-dot" />
+            <span class="typing-dot" />
+            <span class="typing-dot" />
+          </div>
         </div>
       </div>
 
-      <div
-        v-for="msg in chatStore.messages"
-        :key="msg.id"
-        class="message-row"
-        :class="msg.role"
-      >
-        <div class="msg-avatar">
-          <el-avatar :size="32" v-if="msg.role === 'user'">
-            {{ userStore.user?.display_name?.[0] }}
-          </el-avatar>
-          <el-avatar :size="32" v-else style="background: #409eff">
-            <el-icon><Service /></el-icon>
-          </el-avatar>
-        </div>
-        <div class="msg-bubble" v-html="renderMarkdown(msg.content)" />
+      <div class="chat-input-area">
+        <el-input
+          v-model="inputText"
+          type="textarea"
+          :rows="2"
+          placeholder="输入您的问题..."
+          :disabled="chatStore.isStreaming"
+          @keyup.enter.exact="handleSend"
+          resize="none"
+        />
+        <el-button
+          type="primary"
+          :disabled="!inputText.trim() || chatStore.isStreaming"
+          :loading="chatStore.isStreaming"
+          @click="handleSend"
+          style="margin-left: 12px; height: 56px"
+        >
+          <el-icon><Promotion /></el-icon>
+          发送
+        </el-button>
       </div>
-
-      <div v-if="chatStore.isStreaming" class="message-row assistant">
-        <div class="msg-avatar">
-          <el-avatar :size="32" style="background: #409eff">
-            <el-icon><Service /></el-icon>
-          </el-avatar>
-        </div>
-        <div class="msg-bubble typing">
-          <span class="typing-dot" />
-          <span class="typing-dot" />
-          <span class="typing-dot" />
-        </div>
-      </div>
-    </div>
-
-    <div class="chat-input-area">
-      <el-input
-        v-model="inputText"
-        type="textarea"
-        :rows="2"
-        placeholder="输入您的问题..."
-        :disabled="chatStore.isStreaming"
-        @keyup.enter.exact="handleSend"
-        resize="none"
-      />
-      <el-button
-        type="primary"
-        :disabled="!inputText.trim() || chatStore.isStreaming"
-        :loading="chatStore.isStreaming"
-        @click="handleSend"
-        style="margin-left: 12px; height: 56px"
-      >
-        <el-icon><Promotion /></el-icon>
-        发送
-      </el-button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, watch } from 'vue'
+import { ref, nextTick, watch, onMounted } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { useChatStore } from '../stores/chat'
 import { useUserStore } from '../stores/user'
@@ -113,12 +143,29 @@ function scrollToBottom() {
 
 watch(() => chatStore.messages.length, scrollToBottom)
 
+function formatSessionTime(iso: string): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const now = new Date()
+  const diff = now.getTime() - d.getTime()
+  if (diff < 86400000) return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  if (diff < 604800000) return `${Math.floor(diff / 86400000)}天前`
+  return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+}
+
+onMounted(() => {
+  chatStore.fetchSessions()
+})
+
 async function handleSend() {
   const text = inputText.value.trim()
   if (!text || chatStore.isStreaming) return
   inputText.value = ''
   await chatStore.sendMessage(text)
   scrollToBottom()
+  if (chatStore.messages.length <= 2) {
+    chatStore.fetchSessions()
+  }
 }
 
 function handleQuick(q: string) {
@@ -128,12 +175,77 @@ function handleQuick(q: string) {
 </script>
 
 <style scoped>
-.chat-view {
+.chat-layout {
+  display: flex;
+  height: calc(100vh - 40px);
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.session-sidebar {
+  width: 220px;
+  border-right: 1px solid #e4e7ed;
+  background: #fafafa;
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 40px);
-  max-width: 900px;
-  margin: 0 auto;
+  flex-shrink: 0;
+  transition: width 0.2s, padding 0.2s;
+  overflow: hidden;
+}
+
+.session-sidebar.collapsed {
+  width: 0;
+  border-right: none;
+}
+
+.sidebar-top {
+  padding: 12px;
+}
+
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.session-item {
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+}
+
+.session-item:hover {
+  background: #e8eaed;
+}
+
+.session-item.active {
+  background: #d9ecff;
+}
+
+.session-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-meta {
+  font-size: 11px;
+  color: #909399;
+  margin-top: 2px;
+  display: flex;
+  gap: 8px;
+}
+
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .chat-header {

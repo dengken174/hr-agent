@@ -16,6 +16,10 @@
         active-text-color="#fff"
         class="sidebar-menu"
       >
+        <el-menu-item index="/dashboard">
+          <el-icon><DataBoard /></el-icon>
+          <span>仪表盘</span>
+        </el-menu-item>
         <el-menu-item index="/chat">
           <el-icon><ChatDotRound /></el-icon>
           <span>对话</span>
@@ -31,6 +35,10 @@
         <el-menu-item index="/eval">
           <el-icon><DataAnalysis /></el-icon>
           <span>RAG 评测</span>
+        </el-menu-item>
+        <el-menu-item index="/skills" v-if="userStore.isAdmin">
+          <el-icon><MagicStick /></el-icon>
+          <span>技能管理</span>
         </el-menu-item>
       </el-menu>
       <div class="sidebar-footer">

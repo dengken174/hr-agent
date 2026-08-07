@@ -11,12 +11,22 @@ const router = createRouter({
     },
     {
       path: '/',
-      redirect: '/chat',
+      redirect: '/dashboard',
+    },
+    {
+      path: '/dashboard',
+      name: 'dashboard',
+      component: () => import('../views/DashboardView.vue'),
     },
     {
       path: '/chat',
       name: 'chat',
       component: () => import('../views/ChatView.vue'),
+    },
+    {
+      path: '/skills',
+      name: 'skills',
+      component: () => import('../views/SkillManager.vue'),
     },
     {
       path: '/approval',

@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import client from '../api/client'
 
 export interface Message {
   id: string
@@ -9,10 +8,19 @@ export interface Message {
   timestamp: number
 }
 
+export interface Session {
+  session_id: string
+  title: string
+  message_count: number
+  updated_at: string
+}
+
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<Message[]>([])
   const isStreaming = ref(false)
   const sessionId = ref('default')
+  const sessions = ref<Session[]>([])
+  const sidebarCollapsed = ref(false)
 
   function addMessage(role: Message['role'], content: string) {
     messages.value.push({
@@ -86,5 +94,41 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
   }
 
-  return { messages, isStreaming, sessionId, addMessage, sendMessage, clearMessages }
+  async function fetchSessions() {
+    try {
+      const { getSessions } = await import('../api/index')
+      const { data } = await getSessions()
+      sessions.value = data
+    } catch {
+      // silently fail
+    }
+  }
+
+  async function loadHistory(sid: string) {
+    sessionId.value = sid
+    messages.value = []
+    try {
+      const { getChatHistory } = await import('../api/index')
+      const { data } = await getChatHistory(sid)
+      for (const msg of data) {
+        addMessage(msg.role as Message['role'], msg.content)
+      }
+    } catch {
+      // silently fail
+    }
+  }
+
+  function newSession() {
+    const id = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    sessionId.value = id
+    messages.value = []
+    sessions.value.unshift({
+      session_id: id,
+      title: '新对话',
+      message_count: 0,
+      updated_at: new Date().toISOString(),
+    })
+  }
+
+  return { messages, isStreaming, sessionId, sessions, sidebarCollapsed, addMessage, sendMessage, clearMessages, fetchSessions, loadHistory, newSession }
 })
