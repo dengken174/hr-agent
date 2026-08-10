@@ -6,6 +6,7 @@ export interface Message {
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: number
+  audioUrl?: string // blob URL for voice input playback
 }
 
 export interface Session {
@@ -18,6 +19,7 @@ export interface Session {
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<Message[]>([])
   const isStreaming = ref(false)
+  const lastReply = ref('')
   const sessionId = ref('default')
   const sessions = ref<Session[]>([])
   const sidebarCollapsed = ref(false)
@@ -87,6 +89,7 @@ export const useChatStore = defineStore('chat', () => {
       assistantMsg.content = `请求失败: ${(e as Error).message}`
     } finally {
       isStreaming.value = false
+      lastReply.value = assistantMsg.content
     }
   }
 
@@ -130,5 +133,5 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  return { messages, isStreaming, sessionId, sessions, sidebarCollapsed, addMessage, sendMessage, clearMessages, fetchSessions, loadHistory, newSession }
+  return { messages, isStreaming, lastReply, sessionId, sessions, sidebarCollapsed, addMessage, sendMessage, clearMessages, fetchSessions, loadHistory, newSession }
 })
