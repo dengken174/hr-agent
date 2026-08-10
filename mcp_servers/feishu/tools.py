@@ -62,14 +62,18 @@ async def send_notification(user_id: str, message: str) -> list[types.TextConten
 async def send_tts_audio(open_id: str, text: str) -> list[types.TextContent]:
     """给飞书用户发送 TTS 语音消息。
 
-    流程: edge-tts 合成 MP3 → 上传飞书文件 → 发送音频消息。
-    同时发送文字消息（飞书音频消息不显示文字内容）。
+    流程: edge-tts 合成 MP3 → ffmpeg 转 Opus (飞书语音气泡仅支持 Opus)
+    → 上传飞书 → 发送音频 + 文字消息。
     """
     if not feishu_client.is_configured:
         return _text(f"[mock] TTS audio for: {text[:50]}...")
 
+    import subprocess
+    import tempfile
+    import os as _os
+
     try:
-        # 1. TTS synthesis (edge-tts lazy import; markdown stripped first)
+        # 1. TTS synthesis
         import edge_tts
         from backend.routes.tts import clean_tts_text
 
@@ -81,26 +85,51 @@ async def send_tts_audio(open_id: str, text: str) -> list[types.TextContent]:
                 mp3_chunks.append(chunk["data"])
         mp3_bytes = b"".join(mp3_chunks)
 
-        # 2. Upload to Feishu (multipart: file + form field file_type)
+        # 2. MP3 → Opus via ffmpeg (Feishu audio msg_type only accepts Opus)
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as mp3_tmp:
+            mp3_tmp.write(mp3_bytes)
+            mp3_path = mp3_tmp.name
+        opus_path = mp3_path.replace(".mp3", ".opus")
+
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", mp3_path, "-acodec", "libopus", "-ac", "1", "-ar", "16000", opus_path],
+            capture_output=True, check=True,
+        )
+        with open(opus_path, "rb") as f:
+            opus_bytes = f.read()
+
+        # Get duration in ms via ffprobe
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", opus_path],
+            capture_output=True, text=True,
+        )
+        duration_ms = int(float(probe.stdout.strip()) * 1000) if probe.stdout.strip() else 0
+
+        # Cleanup temp files
+        _os.unlink(mp3_path)
+        _os.unlink(opus_path)
+
+        # 3. Upload Opus to Feishu
         upload_resp = await feishu_client.post(
             "/im/v1/files",
-            files={"file": ("tts.mp3", mp3_bytes, "audio/mpeg")},
+            files={"file": ("tts.opus", opus_bytes, "audio/ogg")},
             data={"file_type": "opus"},
         )
         file_key = upload_resp.get("data", {}).get("file_key", "")
 
-        # 3. Send audio message
+        # 4. Send audio message
         await feishu_client.post(
             "/im/v1/messages",
             params={"receive_id_type": "open_id"},
             body={
                 "receive_id": open_id,
                 "msg_type": "audio",
-                "content": json.dumps({"file_key": file_key}),
+                "content": json.dumps({"file_key": file_key, "duration": duration_ms}),
             },
         )
 
-        # 4. Also send text (audio messages don't show text)
+        # 5. Also send text (Feishu audio bubble doesn't display text)
         await feishu_client.post(
             "/im/v1/messages",
             params={"receive_id_type": "open_id"},
@@ -111,7 +140,7 @@ async def send_tts_audio(open_id: str, text: str) -> list[types.TextContent]:
             },
         )
 
-        return _text(str({"status": "sent", "file_key": file_key}))
+        return _text(str({"status": "sent", "file_key": file_key, "duration_ms": duration_ms}))
 
     except Exception as e:
         logger.exception("Feishu TTS audio send failed")
