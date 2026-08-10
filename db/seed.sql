@@ -1,12 +1,13 @@
 USE hragent;
 
+-- Passwords below are bcrypt hashes for: admin123, emp123, int123
 INSERT INTO users (username, password, display_name, role) VALUES
-('admin', 'admin123', 'HR Admin', 'hr_admin'),
-('employee', 'emp123', '张三', 'employee'),
-('interviewer', 'int123', '面试者', 'interviewer'),
-('zhangsan', 'emp123', '张三', 'employee'),
-('lisi', 'emp123', '李四', 'employee'),
-('wangwu', 'emp123', '王五', 'employee');
+('admin', '$2b$12$Qz.4rNivItMgBrk0ID1FXuR5smTsvALRZmFLK0KR79K6cXJJY7kxa', 'HR Admin', 'hr_admin'),
+('employee', '$2b$12$Y9BWJUDKvX7mbNy2KrmmpusRu3ZVkUyYFoZLtrGuUBM4ARuX14/ui', '张三', 'employee'),
+('interviewer', '$2b$12$HwhdKDymk2j7gL7SBijmUOG9hP1hXbrWJrFe5qqCoGfULchQO3JxW', '面试者', 'interviewer'),
+('zhangsan', '$2b$12$Y9BWJUDKvX7mbNy2KrmmpusRu3ZVkUyYFoZLtrGuUBM4ARuX14/ui', '张三', 'employee'),
+('lisi', '$2b$12$Y9BWJUDKvX7mbNy2KrmmpusRu3ZVkUyYFoZLtrGuUBM4ARuX14/ui', '李四', 'employee'),
+('wangwu', '$2b$12$Y9BWJUDKvX7mbNy2KrmmpusRu3ZVkUyYFoZLtrGuUBM4ARuX14/ui', '王五', 'employee');
 
 INSERT INTO knowledge_docs (id, title, content, category, tags) VALUES
 ('K001', '入职流程指南', '报到时间：周一至周五 9:00；地点：HR 办公室 3F。携带材料：身份证原件、学历学位证复印件、离职证明、银行卡。当天安排：签劳动合同、领取办公设备、开通公司账号、入职培训。', 'guide', '["入职","流程","报到"]'),

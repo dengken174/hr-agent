@@ -1,66 +1,84 @@
-"""JWT Mock 鉴权 + RBAC + 审计日志中间件。"""
+"""JWT 鉴权 + RBAC + 审计日志中间件。"""
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+import bcrypt
+import jwt
 from fastapi import Header, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from config import config
+
 logger = logging.getLogger("backend.middleware")
 
-# ── Mock 用户数据库 ──────────────────────────────────────────────────
+# ── JWT 配置 ──────────────────────────────────────────────────────────
+
+JWT_SECRET = config.llm.api_key[:32] or "hr-agent-dev-secret-change-me"
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = 24
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode(), hashed.encode())
+
+
+def create_token(user_id: int, role: str, display_name: str) -> str:
+    payload = {
+        "user_id": user_id,
+        "role": role,
+        "display_name": display_name,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS),
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def verify_token(token: str) -> dict | None:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return {
+            "user_id": payload["user_id"],
+            "role": payload["role"],
+            "display_name": payload["display_name"],
+        }
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+
+
+# ── Mock 用户（仅开发环境 DB 不可用时的降级）─────────────────────────
 
 MOCK_USERS = {
     "admin": {
-        "password": "admin123",
+        "password": hash_password("admin123"),
         "user_id": 2001,
         "role": "hr_admin",
         "display_name": "HR Admin",
     },
     "employee": {
-        "password": "emp123",
+        "password": hash_password("emp123"),
         "user_id": 1001,
         "role": "employee",
         "display_name": "张三",
     },
     "interviewer": {
-        "password": "int123",
+        "password": hash_password("int123"),
         "user_id": 3001,
         "role": "interviewer",
         "display_name": "面试者",
     },
 }
 
-MOCK_TOKENS: dict[str, dict] = {}
 
-
-# ── Token 工具函数 ──────────────────────────────────────────────────
-
-def create_token(username: str) -> str:
-    import uuid
-    token = f"mock-jwt-{uuid.uuid4().hex[:16]}"
-    user = MOCK_USERS[username]
-    MOCK_TOKENS[token] = {
-        "user_id": user["user_id"],
-        "role": user["role"],
-        "display_name": user["display_name"],
-        "expires_at": time.time() + 86400,
-    }
-    return token
-
-
-def verify_token(token: str) -> dict | None:
-    data = MOCK_TOKENS.get(token)
-    if not data:
-        return None
-    if time.time() > data["expires_at"]:
-        del MOCK_TOKENS[token]
-        return None
-    return data
-
-
-# ── 鉴权依赖 ────────────────────────────────────────────────────────
+# ── 鉴权依赖 ──────────────────────────────────────────────────────────
 
 async def get_current_user(authorization: str = Header(default="")):
     if not authorization:
@@ -72,36 +90,36 @@ async def get_current_user(authorization: str = Header(default="")):
     return user
 
 
-# ── RBAC 装饰器 ─────────────────────────────────────────────────────
+# ── RBAC ───────────────────────────────────────────────────────────────
 
 def require_role(*roles: str):
-    """要求用户具有指定角色之一。"""
-
     async def dependency(user: dict = None):
         if user is None:
             user = {}
         if user.get("role") not in roles:
             raise HTTPException(status_code=403, detail=f"Requires one of roles: {roles}")
         return user
-
     return dependency
 
 
-# ── 审计日志中间件 ──────────────────────────────────────────────────
+# ── 审计日志中间件 ────────────────────────────────────────────────────
 
 class AuditMiddleware(BaseHTTPMiddleware):
-    """记录每个请求的审计日志。"""
+    def __init__(self, app):
+        super().__init__(app)
+        # Skip audit for static files
+        self._skip_prefixes = ("/assets/",)
 
     async def dispatch(self, request: Request, call_next: Callable):
+        if any(request.url.path.startswith(p) for p in self._skip_prefixes):
+            return await call_next(request)
         start = time.time()
         response = await call_next(request)
         elapsed_ms = (time.time() - start) * 1000
         logger.info(
             "AUDIT | %s %s | %d | %.1fms | %s",
-            request.method,
-            request.url.path,
-            response.status_code,
-            elapsed_ms,
+            request.method, request.url.path,
+            response.status_code, elapsed_ms,
             request.client.host if request.client else "-",
         )
         return response
