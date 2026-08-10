@@ -20,6 +20,8 @@ from backend.routes.approval import router as approval_router
 from backend.routes.knowledge import router as knowledge_router
 from backend.routes.eval import router as eval_router
 from backend.routes.auth_feishu import router as auth_feishu_router
+from backend.routes.tts import router as tts_router
+from backend.routes.stt import router as stt_router
 from agent.executor import hr_agent
 
 logging.basicConfig(
@@ -73,6 +75,8 @@ app.include_router(approval_router)
 app.include_router(knowledge_router)
 app.include_router(eval_router)
 app.include_router(auth_feishu_router)
+app.include_router(tts_router)
+app.include_router(stt_router)
 
 
 @app.get("/api/health")
