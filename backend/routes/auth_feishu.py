@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from backend.middleware import MOCK_USERS, create_token, verify_token, verify_password, get_current_user
+from backend.middleware import MOCK_USERS, create_token, verify_token, verify_password, hash_password, get_current_user
 from backend.models import LoginRequest, TokenResponse, StatsResponse
 from db.repositories import UserRepo
 
