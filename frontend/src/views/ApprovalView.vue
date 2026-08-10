@@ -3,9 +3,9 @@
     <div class="page-header">
       <h3>审批管理</h3>
       <div class="header-stats">
-        <el-tag type="warning">待审批 {{ stats.pending }}</el-tag>
-        <el-tag type="success">已通过 {{ stats.approved }}</el-tag>
-        <el-tag type="danger">已驳回 {{ stats.rejected }}</el-tag>
+        <el-tag type="warning">待审批 {{ store.stats.pending }}</el-tag>
+        <el-tag type="success">已通过 {{ store.stats.approved }}</el-tag>
+        <el-tag type="danger">已驳回 {{ store.stats.rejected }}</el-tag>
       </div>
     </div>
 

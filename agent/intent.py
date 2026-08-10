@@ -30,8 +30,11 @@ class IntentClassifier:
     """使用 DeepSeek few-shot 做意图分类，返回 intent + entity。"""
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        key = api_key or config.llm.api_key
+        if not key:
+            raise RuntimeError("DEEPSEEK_API_KEY is not set. Set the environment variable or pass api_key.")
         self._client = AsyncOpenAI(
-            api_key=api_key or config.llm.api_key,
+            api_key=key,
             base_url=base_url or config.llm.base_url,
         )
         self._model = config.llm.chat_model
@@ -69,4 +72,19 @@ class IntentClassifier:
             return {}
 
 
-intent_classifier = IntentClassifier()
+class _LazyIntentClassifier:
+    """Lazy proxy — defers IntentClassifier creation until first use."""
+
+    def __init__(self):
+        self._instance: IntentClassifier | None = None
+
+    def _ensure(self) -> IntentClassifier:
+        if self._instance is None:
+            self._instance = IntentClassifier()
+        return self._instance
+
+    def __getattr__(self, name: str):
+        return getattr(self._ensure(), name)
+
+
+intent_classifier: IntentClassifier = _LazyIntentClassifier()  # type: ignore

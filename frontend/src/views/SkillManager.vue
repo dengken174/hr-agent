@@ -23,7 +23,6 @@ const emptySkill = (): Skill => ({
 
 const form = ref<Skill>(emptySkill())
 const triggerInput = ref('')
-const toolInput = ref('')
 
 const addTrigger = () => {
   const v = triggerInput.value.trim()

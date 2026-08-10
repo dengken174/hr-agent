@@ -334,4 +334,19 @@ class HRAgent:
 
 # ── 全局单例 ────────────────────────────────────────────────────────
 
-hr_agent = HRAgent()
+class _LazyHRAgent:
+    """Lazy proxy — defers HRAgent creation until first use."""
+
+    def __init__(self):
+        self._instance: HRAgent | None = None
+
+    def _ensure(self) -> HRAgent:
+        if self._instance is None:
+            self._instance = HRAgent()
+        return self._instance
+
+    def __getattr__(self, name: str):
+        return getattr(self._ensure(), name)
+
+
+hr_agent: HRAgent = _LazyHRAgent()  # type: ignore

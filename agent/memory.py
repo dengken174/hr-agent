@@ -240,4 +240,19 @@ class MemoryManager:
         await self._chat_history.close()
 
 
-memory_manager = MemoryManager()
+class _LazyMemoryManager:
+    """Lazy proxy — defers MemoryManager creation until first use."""
+
+    def __init__(self):
+        self._instance: MemoryManager | None = None
+
+    def _ensure(self) -> MemoryManager:
+        if self._instance is None:
+            self._instance = MemoryManager()
+        return self._instance
+
+    def __getattr__(self, name: str):
+        return getattr(self._ensure(), name)
+
+
+memory_manager: MemoryManager = _LazyMemoryManager()  # type: ignore
