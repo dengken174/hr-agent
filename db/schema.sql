@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS users (
     display_name VARCHAR(64) NOT NULL,
     role        VARCHAR(16) NOT NULL DEFAULT 'employee',
     open_id     VARCHAR(128) DEFAULT NULL,
+    voice_enabled BOOLEAN DEFAULT TRUE,
+    voice_rate    VARCHAR(8) DEFAULT '+20%',
     created_at  DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
