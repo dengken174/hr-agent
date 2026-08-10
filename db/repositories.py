@@ -28,6 +28,31 @@ class UserRepo:
                 await cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
                 return await cur.fetchone()
 
+    async def get_by_open_id(self, open_id: str) -> dict | None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("SELECT * FROM users WHERE open_id = %s", (open_id,))
+                return await cur.fetchone()
+
+    async def upsert_by_open_id(self, open_id: str, display_name: str = "") -> dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("SELECT * FROM users WHERE open_id = %s", (open_id,))
+                user = await cur.fetchone()
+                if user:
+                    return user
+                # Create new user for this Feishu user
+                username = f"feishu_{open_id[-12:]}"
+                name = display_name or f"飞书用户{open_id[-6:]}"
+                await cur.execute(
+                    "INSERT INTO users (username, password, display_name, role, open_id) VALUES (%s, %s, %s, %s, %s)",
+                    (username, "", name, "employee", open_id),
+                )
+                return {"id": cur.lastrowid, "username": username, "role": "employee",
+                        "display_name": name, "open_id": open_id, "voice_enabled": True, "voice_rate": "+20%"}
+
 
 class ConversationRepo:
     async def save(self, session_id: str, user_id: int, role: str, content: str, intent: str = "") -> str:

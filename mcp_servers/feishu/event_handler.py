@@ -171,9 +171,12 @@ class EventRouter:
         return None
 
     async def _handle_message(self, event: FeishuEvent) -> FeishuReply | None:
-        """处理文本消息 — 调用 Agent 真实对话。"""
+        """处理文本消息 — 调用 Agent 真实对话，按用户偏好发送语音回复。"""
         if not event.content.strip():
             return None
+
+        # Resolve user from DB (or create on first contact)
+        user = await _resolve_user(event.sender_id, event.sender_name)
 
         try:
             from agent.executor import hr_agent
@@ -183,14 +186,23 @@ class EventRouter:
             reply_text = await hr_agent.chat(
                 user_message=event.content,
                 session_id=f"feishu-{event.chat_id}",
-                user_id=hash(event.sender_id) % 10000,
-                user_role="employee",
+                user_id=user["id"],
+                user_role=user.get("role", "employee"),
             )
         except Exception:
             logger.exception("Agent chat failed")
             reply_text = "抱歉，我暂时无法处理您的请求，请稍后再试。"
 
         at_sender = event.source_type == "group_chat"
+
+        # Voice reply if user has voice enabled
+        if user.get("voice_enabled", True) and reply_text:
+            try:
+                from mcp_servers.feishu.tools import send_tts_audio
+                await send_tts_audio(event.sender_id, reply_text)
+            except Exception:
+                logger.exception("Feishu TTS reply failed, text reply still sent")
+
         return FeishuReply(
             chat_id=event.chat_id, message_id=event.message_id,
             content=reply_text, content_type="text", at_sender=at_sender,
@@ -225,6 +237,30 @@ class EventRouter:
 
 
 event_router = EventRouter()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 用户解析
+# ═══════════════════════════════════════════════════════════════════════
+
+async def _resolve_user(open_id: str, display_name: str = "") -> dict:
+    """通过飞书 open_id 查找或创建用户。返回包含 voice_enabled 等偏好的 dict。"""
+    try:
+        from db.repositories import UserRepo
+        repo = UserRepo()
+        user = await repo.upsert_by_open_id(open_id, display_name)
+        if user:
+            return user
+    except Exception:
+        logger.warning("MySQL unavailable for user lookup, using fallback")
+    # Fallback: mock user
+    return {
+        "id": hash(open_id) % 10000,
+        "role": "employee",
+        "display_name": display_name or open_id,
+        "voice_enabled": True,
+        "voice_rate": "+20%",
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════
