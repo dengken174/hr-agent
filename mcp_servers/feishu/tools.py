@@ -59,6 +59,65 @@ async def send_notification(user_id: str, message: str) -> list[types.TextConten
         return _text(str({"status": "error", "code": e.code, "message": e.message}))
 
 
+async def send_tts_audio(open_id: str, text: str) -> list[types.TextContent]:
+    """给飞书用户发送 TTS 语音消息。
+
+    流程: edge-tts 合成 MP3 → 上传飞书文件 → 发送音频消息。
+    同时发送文字消息（飞书音频消息不显示文字内容）。
+    """
+    if not feishu_client.is_configured:
+        return _text(f"[mock] TTS audio for: {text[:50]}...")
+
+    try:
+        # 1. TTS synthesis (edge-tts lazy import; markdown stripped first)
+        import edge_tts
+        from backend.routes.tts import clean_tts_text
+
+        clean = clean_tts_text(text)
+        communicate = edge_tts.Communicate(clean, voice="zh-CN-XiaoxiaoNeural", rate="+20%")
+        mp3_chunks: list[bytes] = []
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                mp3_chunks.append(chunk["data"])
+        mp3_bytes = b"".join(mp3_chunks)
+
+        # 2. Upload to Feishu (multipart: file + form field file_type)
+        upload_resp = await feishu_client.post(
+            "/im/v1/files",
+            files={"file": ("tts.mp3", mp3_bytes, "audio/mpeg")},
+            data={"file_type": "opus"},
+        )
+        file_key = upload_resp.get("data", {}).get("file_key", "")
+
+        # 3. Send audio message
+        await feishu_client.post(
+            "/im/v1/messages",
+            params={"receive_id_type": "open_id"},
+            body={
+                "receive_id": open_id,
+                "msg_type": "audio",
+                "content": json.dumps({"file_key": file_key}),
+            },
+        )
+
+        # 4. Also send text (audio messages don't show text)
+        await feishu_client.post(
+            "/im/v1/messages",
+            params={"receive_id_type": "open_id"},
+            body={
+                "receive_id": open_id,
+                "msg_type": "text",
+                "content": json.dumps({"text": text}),
+            },
+        )
+
+        return _text(str({"status": "sent", "file_key": file_key}))
+
+    except Exception as e:
+        logger.exception("Feishu TTS audio send failed")
+        return _text(str({"status": "error", "message": str(e)}))
+
+
 async def get_my_attendance(employee_id: int, month: str | None = None) -> list[types.TextContent]:
     """查询打卡记录。
 
@@ -683,6 +742,12 @@ FEISHU_TOOLS = [
             "message": {"type": "string"},
         }, "required": ["user_id", "message"]},
         send_notification),
+    ToolDef("send_tts_audio", "给用户发送 TTS 语音消息 (edge-tts 合成 → 上传 → 发送音频 + 文字)",
+        {"type": "object", "properties": {
+            "open_id": {"type": "string", "description": "用户的 open_id"},
+            "text": {"type": "string"},
+        }, "required": ["open_id", "text"]},
+        send_tts_audio),
 
     # ── 文档 ──
     ToolDef("create_doc", "创建飞书文档 (API: docx/v1/documents)",
