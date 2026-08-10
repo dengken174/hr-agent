@@ -31,10 +31,29 @@
           <el-icon><Fold /></el-icon>
         </el-button>
         <h3>智能对话</h3>
-        <el-button text size="small" @click="chatStore.clearMessages()">
-          <el-icon><Delete /></el-icon>
-          清空对话
-        </el-button>
+        <div class="header-right">
+          <!-- Voice controls -->
+          <div class="voice-controls" v-if="voiceInput.isSupported.value">
+            <el-switch
+              v-model="voiceEnabled"
+              active-text="语音回复"
+              size="small"
+            />
+            <div class="rate-slider" v-if="voiceEnabled">
+              <span class="rate-label">语速 {{ voiceRate }}</span>
+              <el-slider
+                v-model="voiceRateNum"
+                :min="0.5" :max="2.0" :step="0.25"
+                style="width: 100px"
+                @input="voiceRate = voiceRateNum + 'x'"
+              />
+            </div>
+          </div>
+          <el-button text size="small" @click="chatStore.clearMessages()">
+            <el-icon><Delete /></el-icon>
+            清空对话
+          </el-button>
+        </div>
       </div>
 
       <div class="chat-messages" ref="msgContainer">
@@ -66,7 +85,19 @@
               <el-icon><Service /></el-icon>
             </el-avatar>
           </div>
-          <div class="msg-bubble" v-html="renderMarkdown(msg.content)" />
+          <div class="msg-bubble">
+            <div v-html="renderMarkdown(msg.content)"></div>
+            <div v-if="msg.role === 'user' && msg.audioUrl" class="msg-extra">
+              <el-button text size="small" @click="playRecording(msg.audioUrl!)">
+                <el-icon><VideoPlay /></el-icon> {{ formatDuration(msg.audioUrl) }}
+              </el-button>
+            </div>
+            <div v-if="msg.role === 'assistant' && voiceEnabled && msg.content" class="msg-extra">
+              <el-button text size="small" @click="replayTTS(msg.content)">
+                <el-icon><Headset /></el-icon> 重播
+              </el-button>
+            </div>
+          </div>
         </div>
 
         <div v-if="chatStore.isStreaming" class="message-row assistant">
@@ -84,6 +115,17 @@
       </div>
 
       <div class="chat-input-area">
+        <el-button
+          :type="micButtonType"
+          :disabled="micDisabled"
+          :loading="voiceInput.status.value === 'processing'"
+          circle
+          @click="handleMicClick"
+          size="default"
+          class="mic-btn"
+        >
+          <el-icon><Microphone /></el-icon>
+        </el-button>
         <el-input
           v-model="inputText"
           type="textarea"
@@ -109,10 +151,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted } from 'vue'
+import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { useChatStore } from '../stores/chat'
 import { useUserStore } from '../stores/user'
+import { useVoiceInput } from '../composables/useVoiceInput'
+import { useVoiceTTS } from '../composables/useVoiceTTS'
 
 const chatStore = useChatStore()
 const userStore = useUserStore()
@@ -127,6 +171,70 @@ const quickQuestions = [
   '入职需要带什么材料？',
   '住房补贴标准是多少？',
 ]
+
+// Voice integration
+const voiceInput = useVoiceInput()
+const voiceTTS = useVoiceTTS()
+const voiceEnabled = ref(localStorage.getItem('hr-voice-enabled') !== 'false')
+const voiceRate = ref(localStorage.getItem('hr-voice-rate') || '1.2')
+const voiceRateNum = ref(parseFloat(voiceRate.value))
+
+// Persist voice preferences
+watch(voiceEnabled, (v) => localStorage.setItem('hr-voice-enabled', String(v)))
+watch(voiceRate, (v) => localStorage.setItem('hr-voice-rate', v))
+
+// Mutual exclusion: disable mic when TTS playing or streaming
+const micDisabled = computed(() =>
+  !voiceInput.isSupported.value ||
+  voiceInput.status.value === 'processing' ||
+  voiceTTS.status.value === 'playing' ||
+  voiceTTS.status.value === 'interrupting' ||
+  chatStore.isStreaming
+)
+
+const micButtonType = computed(() => {
+  switch (voiceInput.status.value) {
+    case 'recording': return 'danger'
+    case 'calibrating': return 'warning'
+    default: return 'default'
+  }
+})
+
+// Auto-TTS after agent finishes streaming
+watch(() => chatStore.isStreaming, (newVal, oldVal) => {
+  if (!newVal && oldVal && voiceEnabled.value && chatStore.lastReply) {
+    voiceTTS.requestTTS(chatStore.lastReply, undefined, voiceRate.value)
+  }
+})
+
+// Handle mic click: toggle recording, on stop fill input and send
+async function handleMicClick() {
+  if (voiceInput.status.value === 'recording' || voiceInput.status.value === 'calibrating') {
+    const text = await voiceInput.stopRecording()
+    if (text) {
+      inputText.value = text
+      handleSend()
+    }
+  } else {
+    voiceTTS.stopTTS()  // interrupt any playing TTS before recording
+    await voiceInput.startRecording()
+  }
+}
+
+// Playback helpers
+function playRecording(url: string) {
+  const audio = new Audio(url)
+  audio.play().catch(() => { /* user interaction may be needed */ })
+}
+
+function replayTTS(text: string) {
+  voiceTTS.requestTTS(text, undefined, voiceRate.value)
+}
+
+function formatDuration(_url: string | undefined): string {
+  // Duration is loaded asynchronously; show placeholder until metadata loads
+  return '0:00'
+}
 
 function renderMarkdown(text: string): string {
   if (!text) return ''
@@ -157,7 +265,12 @@ onMounted(() => {
   chatStore.fetchSessions()
 })
 
+onUnmounted(() => {
+  voiceInput.cleanup()
+})
+
 async function handleSend() {
+  voiceTTS.stopTTS()  // interrupt any playing TTS when user sends new message
   const text = inputText.value.trim()
   if (!text || chatStore.isStreaming) return
   inputText.value = ''
@@ -262,6 +375,30 @@ function handleQuick(q: string) {
   font-weight: 600;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.voice-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.rate-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rate-label {
+  font-size: 12px;
+  color: #909399;
+  white-space: nowrap;
+}
+
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -346,6 +483,12 @@ function handleQuick(q: string) {
   margin: 4px 0;
 }
 
+.msg-extra {
+  margin-top: 4px;
+  display: flex;
+  gap: 4px;
+}
+
 .typing {
   display: flex;
   align-items: center;
@@ -376,5 +519,12 @@ function handleQuick(q: string) {
   padding: 12px 0 0;
   border-top: 1px solid #e4e7ed;
   margin-top: 12px;
+}
+
+.mic-btn {
+  margin-right: 8px;
+  height: 40px;
+  width: 40px;
+  flex-shrink: 0;
 }
 </style>
