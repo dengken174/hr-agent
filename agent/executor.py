@@ -18,6 +18,14 @@ from agent.skill_manager import CustomSkill, skill_manager
 
 logger = logging.getLogger(__name__)
 
+# ── LangSmith tracing 初始化（须在 LangChain 组件初始化前设置）─────────
+if config.langsmith.tracing_enabled and config.langsmith.api_key:
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+    os.environ.setdefault("LANGCHAIN_API_KEY", config.langsmith.api_key)
+    os.environ.setdefault("LANGCHAIN_PROJECT", config.langsmith.project)
+    os.environ.setdefault("LANGCHAIN_ENDPOINT", config.langsmith.endpoint)
+    logger.info("LangSmith tracing enabled (project=%s)", config.langsmith.project)
+
 # 需要绑定调用者身份的参数名
 _IDENTITY_PARAMS = {"employee_id", "applicant_id", "operator_id", "assignee_id"}
 
@@ -273,8 +281,11 @@ class HRAgent:
             handle_parsing_errors=True,
         )
 
-        # 10. 执行
-        result = await agent_executor.ainvoke({"input": user_input})
+        # 10. 执行（附 LangSmith trace 元数据）
+        result = await agent_executor.ainvoke(
+            {"input": user_input},
+            config={"metadata": self._trace_metadata(session_id, user_id, user_role, intent)},
+        )
         output = result.get("output", "")
 
         # 9. 持久化对话
@@ -345,10 +356,11 @@ class HRAgent:
             verbose=True, handle_parsing_errors=True,
         )
 
-        # 7. 使用 astream_events 实现 token 级流式
+        # 7. 使用 astream_events 实现 token 级流式（附 LangSmith trace 元数据）
         full_output = ""
         async for event in agent_executor.astream_events(
             {"input": user_input}, version="v2",
+            config={"metadata": self._trace_metadata(session_id, user_id, user_role, intent)},
         ):
             kind = event.get("event", "")
             if kind == "on_chat_model_stream":
@@ -359,7 +371,10 @@ class HRAgent:
 
         # 8. 如果流式没产出，回退 ainvoke
         if not full_output:
-            result = await agent_executor.ainvoke({"input": user_input})
+            result = await agent_executor.ainvoke(
+                {"input": user_input},
+                config={"metadata": self._trace_metadata(session_id, user_id, user_role, intent)},
+            )
             full_output = result.get("output", "")
             yield full_output
 
@@ -371,6 +386,20 @@ class HRAgent:
         )
 
     # ── 内部方法 ─────────────────────────────────────────────────
+
+    def _trace_metadata(
+        self, session_id: str, user_id: int, user_role: str, intent: IntentResult,
+    ) -> dict:
+        """构建 LangSmith trace 元数据，便于在 dashboard 按用户/会话/意图过滤。"""
+        meta = {
+            "session_id": session_id,
+            "user_id": str(user_id),
+            "user_role": user_role,
+            "intent": intent.intent,
+        }
+        if intent.entity:
+            meta["entity"] = str(intent.entity)
+        return meta
 
     def _build_system_text(self, user_role: str, entity: dict | None = None) -> str:
         system_text = HR_SYSTEM_PROMPT

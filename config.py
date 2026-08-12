@@ -60,6 +60,19 @@ class RagConfig:
 
 
 @dataclass
+class LangSmithConfig:
+    """LangSmith 可观测性（tracing）。
+
+    设 LANGCHAIN_TRACING_V2=true + LANGCHAIN_API_KEY 即自动全链路追踪。
+    生产环境敏感数据建议切 Langfuse 自托管。
+    """
+    tracing_enabled: bool = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() in ("true", "1")
+    api_key: str = os.getenv("LANGCHAIN_API_KEY", "")
+    project: str = os.getenv("LANGCHAIN_PROJECT", "hr-agent")
+    endpoint: str = os.getenv("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com")
+
+
+@dataclass
 class FeishuConfig:
     app_id: str = os.getenv("FEISHU_APP_ID", "")
     app_secret: str = os.getenv("FEISHU_APP_SECRET", "")
@@ -96,6 +109,7 @@ class Config:
     jina: JinaConfig = field(default_factory=JinaConfig)
     rag: RagConfig = field(default_factory=RagConfig)
     feishu: FeishuConfig = field(default_factory=FeishuConfig)
+    langsmith: LangSmithConfig = field(default_factory=LangSmithConfig)
     agent_max_iterations: int = 6
     memory_max_token_limit: int = 4000
     approval_timeout_hours: int = 48
