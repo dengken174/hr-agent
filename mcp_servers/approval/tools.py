@@ -90,15 +90,15 @@ class ToolDef:
 APPROVAL_TOOLS = [
     ToolDef(
         name="start_approval",
-        description="发起审批申请",
+        description="发起新的审批申请（请假/福利/报销/证明）。用于\"帮我请假/提交报销申请/申请房补\"。创建后自动提交进入待审批状态。",
         input_schema={
             "type": "object",
             "properties": {
-                "applicant_id": {"type": "integer", "description": "申请人 ID"},
+                "applicant_id": {"type": "integer", "description": "申请人 ID（即本人 user_id）"},
                 "req_type": {"type": "string", "description": "类型: leave/benefit/reimbursement/certificate"},
-                "title": {"type": "string", "description": "审批标题"},
+                "title": {"type": "string", "description": "审批标题，如\"年假申请 — 3天\""},
                 "body": {"type": "object", "description": "审批详情 JSON"},
-                "assignee_id": {"type": "integer", "description": "审批人 ID"},
+                "assignee_id": {"type": "integer", "description": "审批人 ID（选填）"},
             },
             "required": ["applicant_id", "req_type", "title"],
         },
@@ -106,32 +106,32 @@ APPROVAL_TOOLS = [
     ),
     ToolDef(
         name="query_my_approvals",
-        description="查询我发起的审批单及进度",
+        description="查询【我发起的】审批单及进度。用于\"我提交的申请怎么样了/我的请假批了吗\"。区别于 query_pending_approvals（待我审批的）。",
         input_schema={
             "type": "object",
-            "properties": {"applicant_id": {"type": "integer", "description": "申请人 ID"}},
+            "properties": {"applicant_id": {"type": "integer", "description": "申请人 ID（即本人 user_id）"}},
             "required": ["applicant_id"],
         },
         handler=query_my_approvals,
     ),
     ToolDef(
         name="query_pending_approvals",
-        description="查询待我审批的列表",
+        description="查询【待我审批】的列表。用于\"有什么需要我审批的/待办审批\"。区别于 query_my_approvals（我发起的）。仅 HR/审批人可用。",
         input_schema={
             "type": "object",
-            "properties": {"assignee_id": {"type": "integer", "description": "审批人 ID"}},
+            "properties": {"assignee_id": {"type": "integer", "description": "审批人 ID（即本人 user_id）"}},
             "required": ["assignee_id"],
         },
         handler=query_pending_approvals,
     ),
     ToolDef(
         name="approve_request",
-        description="审批通过",
+        description="审批【通过】某个申请。用于\"通过/同意/批准张三的请假申请\"。区别于 reject_request（驳回）。",
         input_schema={
             "type": "object",
             "properties": {
                 "request_id": {"type": "string", "description": "审批单 ID"},
-                "operator_id": {"type": "integer", "description": "操作人 ID"},
+                "operator_id": {"type": "integer", "description": "操作人 ID（即本人 user_id）"},
                 "comment": {"type": "string", "description": "审批意见（选填）"},
             },
             "required": ["request_id", "operator_id"],
@@ -140,13 +140,13 @@ APPROVAL_TOOLS = [
     ),
     ToolDef(
         name="reject_request",
-        description="审批驳回（必填原因）",
+        description="审批【驳回】某个申请（必填原因）。用于\"驳回/拒绝张三的申请\"。区别于 approve_request（通过）。",
         input_schema={
             "type": "object",
             "properties": {
                 "request_id": {"type": "string", "description": "审批单 ID"},
-                "operator_id": {"type": "integer", "description": "操作人 ID"},
-                "reason": {"type": "string", "description": "驳回原因"},
+                "operator_id": {"type": "integer", "description": "操作人 ID（即本人 user_id）"},
+                "reason": {"type": "string", "description": "驳回原因（必填）"},
             },
             "required": ["request_id", "operator_id", "reason"],
         },
@@ -154,7 +154,7 @@ APPROVAL_TOOLS = [
     ),
     ToolDef(
         name="get_approval_detail",
-        description="查看审批单的完整流转记录",
+        description="查看审批单的完整流转记录（含审批历史日志）。用于\"这个审批单的详情/谁审批过/审批到哪一步了\"。",
         input_schema={
             "type": "object",
             "properties": {"request_id": {"type": "string", "description": "审批单 ID"}},

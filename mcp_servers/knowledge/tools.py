@@ -104,41 +104,41 @@ class ToolDef:
 KNOWLEDGE_TOOLS = [
     ToolDef(
         name="search_knowledge_base",
-        description="通用混合检索公司制度文档（制度、政策、流程）",
+        description="通用混合检索公司制度/政策/流程文档。用于不确定具体类别的制度查询，如\"公司加班制度/报销标准\"。区别于 get_benefit_policy（特定福利政策）、get_company_intro（公司介绍）。",
         input_schema={
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "搜索查询"}},
+            "properties": {"query": {"type": "string", "description": "搜索查询，如\"加班制度\""}},
             "required": ["query"],
         },
         handler=search_knowledge_base,
     ),
     ToolDef(
         name="get_benefit_policy",
-        description="查询具体福利政策（五险一金比例、补充医疗、餐补、房补等）",
+        description="查询【福利政策的具体内容】（五险一金比例、餐补、房补金额等）。用于\"五险一金交多少/房补多少钱/年假有几天\"。区别于 get_benefit_application_flow（如何申请福利）。",
         input_schema={
             "type": "object",
-            "properties": {"topic": {"type": "string", "description": "福利主题关键词（选填）"}},
+            "properties": {"topic": {"type": "string", "description": "福利主题关键词，如\"五险一金\"（选填）"}},
         },
         handler=get_benefit_policy,
     ),
     ToolDef(
         name="get_benefit_application_flow",
-        description="查询福利申请流程",
+        description="查询【福利如何申请】（提交路径、审批环节、到账时间）。用于\"怎么申请房补/报销流程/年假怎么请\"。区别于 get_benefit_policy（福利政策内容）。",
         input_schema={
             "type": "object",
-            "properties": {"benefit_type": {"type": "string", "description": "福利类型（选填）"}},
+            "properties": {"benefit_type": {"type": "string", "description": "福利类型，如\"住房补贴\"（选填）"}},
         },
         handler=get_benefit_application_flow,
     ),
     ToolDef(
         name="get_interview_guide",
-        description="面试指南和面试流程说明",
+        description="面试指南和面试流程（面试轮次、形式、准备建议）。用于面试者问\"面试流程/怎么准备面试/面试有哪几轮\"。区别于 get_onboarding_info（入职流程）。",
         input_schema={"type": "object", "properties": {}},
         handler=get_interview_guide,
     ),
     ToolDef(
         name="get_company_intro",
-        description="公司介绍、文化、发展历程",
+        description="公司介绍、文化、规模、价值观、融资阶段。用于\"公司怎么样/公司介绍/公司文化\"。区别于 search_knowledge_base（制度检索）。",
         input_schema={"type": "object", "properties": {}},
         handler=get_company_intro,
     ),

@@ -145,53 +145,53 @@ class ToolDef:
 HRIS_TOOLS = [
     ToolDef(
         name="search_employee",
-        description="按姓名/工号/部门模糊搜索员工信息（不含薪资）",
+        description="按姓名/工号/部门模糊搜索【其他员工】的基本信息（不含薪资）。用于查【别人】的入职时间、部门、职级，如\"张三在哪个部门\"。区别于 get_my_profile（查自己）。仅 HR 可用。",
         input_schema={
             "type": "object",
-            "properties": {"keyword": {"type": "string", "description": "搜索关键词"}},
+            "properties": {"keyword": {"type": "string", "description": "姓名/工号/部门关键词"}},
             "required": ["keyword"],
         },
         handler=search_employee,
     ),
     ToolDef(
         name="get_my_profile",
-        description="查询自己的入职时间、职级、部门、联系方式",
+        description="查询【自己】的入职时间、职级、部门、联系方式。用于\"我的入职时间/我的部门/我的职级\"等本人档案查询。区别于 search_employee（查别人）。",
         input_schema={
             "type": "object",
-            "properties": {"employee_id": {"type": "integer", "description": "员工 ID"}},
+            "properties": {"employee_id": {"type": "integer", "description": "员工 ID（即本人 user_id）"}},
             "required": ["employee_id"],
         },
         handler=get_my_profile,
     ),
     ToolDef(
         name="get_my_salary",
-        description="查询自己的薪资明细及五险一金",
+        description="查询【自己】的薪资明细和五险一金。用于\"我工资多少/我的五险一金交多少\"等薪资查询。仅返回本人薪资，禁止查询他人。区别于 get_my_profile（非薪资信息）。",
         input_schema={
             "type": "object",
-            "properties": {"employee_id": {"type": "integer", "description": "员工 ID"}},
+            "properties": {"employee_id": {"type": "integer", "description": "员工 ID（即本人 user_id）"}},
             "required": ["employee_id"],
         },
         handler=get_my_salary,
     ),
     ToolDef(
         name="get_team_members",
-        description="查看某部门内的员工列表（仅 HR 可用）",
+        description="查看【某部门】的员工列表（姓名/职级/入职时间）。用于\"技术部有哪些人/XX部门多少人\"。区别于 get_org_structure（组织架构层级树）。仅 HR 可用。",
         input_schema={
             "type": "object",
-            "properties": {"dept": {"type": "string", "description": "部门名称"}},
+            "properties": {"dept": {"type": "string", "description": "部门名称，如\"技术部\""}},
             "required": ["dept"],
         },
         handler=get_team_members,
     ),
     ToolDef(
         name="get_org_structure",
-        description="查询公司组织架构树",
+        description="查询公司【组织架构树】（部门层级、负责人）。用于\"公司组织架构/部门结构/谁是部门负责人\"。区别于 get_team_members（某部门成员明细列表）。",
         input_schema={"type": "object", "properties": {}},
         handler=get_org_structure,
     ),
     ToolDef(
         name="get_onboarding_info",
-        description="查询新员工入职指南和报到流程",
+        description="查询【新员工入职】指南、报到流程、需带材料。用于\"入职要带什么/入职流程/报到安排\"。区别于 get_interview_guide（面试流程）。",
         input_schema={"type": "object", "properties": {}},
         handler=get_onboarding_info,
     ),
