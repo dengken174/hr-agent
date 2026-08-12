@@ -2,6 +2,10 @@
 
 HR 在 skills.json 中用中文描述业务需求，Agent 运行时自动加载，
 无需重启服务、无需写代码。
+
+匹配策略（混合）:
+  1. 关键词快速匹配（精确、瞬间）
+  2. 无命中 → 嵌入向量语义匹配（召回长尾表达）
 """
 
 import json
@@ -12,10 +16,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 # Skill 配置文件路径
 SKILLS_FILE = Path(__file__).parent.parent / "mcp_servers" / "skills.json"
+
+# 语义匹配阈值（cosine similarity，0-1）
+_SEMANTIC_THRESHOLD = 0.45
+
+# 语义匹配 embedding 模型（可配置，后续换 BGE-M3 等多语言模型提升中文效果）
+# 默认 all-MiniLM-L6-v2 (384d, 已缓存, 离线可用)；中文效果一般
+# 升级: SKILL_EMBEDDING_MODEL=BAAI/bge-m3 (1024d, 中英多语, 需下载 ~2GB)
+_SKILL_EMBEDDING_MODEL = os.environ.get("SKILL_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
 
 @dataclass
@@ -60,12 +74,15 @@ class CustomSkill:
 
 
 class SkillManager:
-    """Skill 管理器 — 热加载 + CRUD + 匹配。"""
+    """Skill 管理器 — 热加载 + CRUD + 混合匹配（关键词 + 语义）。"""
 
     def __init__(self, skills_file: Path | None = None):
         self._file = Path(skills_file or SKILLS_FILE)
         self._skills: dict[str, CustomSkill] = {}
         self._last_mtime: float = 0
+        self._embedder = None          # lazy init
+        self._skill_vectors: np.ndarray | None = None  # (n_skills, dim)
+        self._skill_order: list[str] = []  # 与 vectors 行序对齐的 skill name
         self._ensure_file()
         self.reload()
 
@@ -127,6 +144,9 @@ class SkillManager:
             for item in raw:
                 skill = CustomSkill.from_dict(item)
                 self._skills[skill.name] = skill
+            # skills 变更 → 清空向量缓存，下次 semantic_match 时重建
+            self._skill_vectors = None
+            self._skill_order = []
             enabled = sum(1 for s in self._skills.values() if s.enabled)
             logger.info("Loaded %d skills (%d enabled) from %s", len(self._skills), enabled, self._file)
         except Exception:
@@ -149,26 +169,109 @@ class SkillManager:
         return self._skills.get(name)
 
     def match(self, user_message: str) -> CustomSkill | None:
-        """用关键词匹配用户意图是否命中某个自定义 Skill。
+        """混合匹配：关键词快速匹配 → 语义嵌入回退。
 
-        返回第一个匹配的 Skill，无匹配返回 None。
+        关键词命中返回第一个匹配 Skill（精确，快速）。
+        关键词无命中则用 embedding cosine similarity 匹配（语义，慢回退）。
+        返回最高分 Skill（需 >= 阈值），无匹配返回 None。
         """
+        # 1. 关键词快速匹配
         import re
         msg_lower = user_message.lower()
         for skill in self._skills.values():
             if not skill.enabled:
                 continue
             for trigger in skill.triggers:
-                # 支持简单正则（HR 配的关键词如果包含 .* 等正则符号，按正则匹配）
                 if any(c in trigger for c in ".*+?[]()"):
                     try:
                         if re.search(trigger, user_message):
                             return skill
                     except re.error:
                         pass
-                # 普通关键词包含匹配
                 if trigger.lower() in msg_lower:
                     return skill
+
+        # 2. 语义嵌入匹配回退
+        return self._semantic_match(user_message)
+
+    # ── 语义匹配 ─────────────────────────────────────────────────
+
+    def _get_embedder(self):
+        """Lazy init embedding model。模型名由 SKILL_EMBEDDING_MODEL 配置。"""
+        if self._embedder is not None:
+            return self._embedder
+        # 强制离线：优先用本地缓存，避免每次启动联网检查导致卡顿
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        try:
+            from sentence_transformers import SentenceTransformer
+            self._embedder = SentenceTransformer(_SKILL_EMBEDDING_MODEL)
+            logger.info("Skill embedder loaded: %s", _SKILL_EMBEDDING_MODEL)
+        except Exception as e:
+            logger.warning("Skill semantic matching unavailable (%s: %s)", _SKILL_EMBEDDING_MODEL, e)
+            self._embedder = False  # 标记不可用
+        return self._embedder
+
+    def _build_skill_vectors(self):
+        """为所有 enabled skill 构建向量索引。仅在 skills 变更时重建。"""
+        model = self._get_embedder()
+        if not model or model is False:
+            return
+
+        enabled_skills = [s for s in self._skills.values() if s.enabled]
+        if not enabled_skills:
+            self._skill_vectors = None
+            self._skill_order = []
+            return
+
+        # 构造 skill 聚合描述: display_name + description + triggers
+        texts = []
+        for s in enabled_skills:
+            parts = [s.display_name, s.description] + s.triggers
+            texts.append(" ".join(parts))
+
+        embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+
+        self._skill_vectors = np.array(embeddings)
+        self._skill_order = [s.name for s in enabled_skills]
+        logger.info("Skill vectors built: %d skills, dim=%d", len(texts), embeddings.shape[1])
+
+    def _semantic_match(self, user_message: str) -> CustomSkill | None:
+        """语义匹配：cosine similarity 找到最相似的 Skill。"""
+        model = self._get_embedder()
+        if not model or model is False:
+            return None
+
+        # 首次或 reload 后重建向量索引
+        if self._skill_vectors is None:
+            try:
+                self._build_skill_vectors()
+            except Exception:
+                logger.warning("Failed to build skill vectors")
+                return None
+
+        if self._skill_vectors is None or len(self._skill_order) == 0:
+            return None
+
+        # 编码用户消息
+        q_vec = model.encode(
+            [user_message],
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        q_vec = np.array(q_vec)
+
+        # cosine similarity（向量已 normalize，dot product = cosine）
+        scores = np.dot(self._skill_vectors, q_vec.T).flatten()
+        best_idx = int(np.argmax(scores))
+        best_score = float(scores[best_idx])
+
+        if best_score >= _SEMANTIC_THRESHOLD:
+            skill_name = self._skill_order[best_idx]
+            logger.info("Semantic match: '%s' -> %s (score=%.3f)", user_message[:50], skill_name, best_score)
+            return self._skills.get(skill_name)
+
+        logger.debug("Semantic match: no skill above threshold %.2f (best=%.3f)", _SEMANTIC_THRESHOLD, best_score)
         return None
 
     def add_skill(self, skill: CustomSkill):
@@ -191,6 +294,8 @@ class SkillManager:
         data = [s.to_dict() for s in self._skills.values()]
         self._file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         self._last_mtime = self._file.stat().st_mtime
+        self._skill_vectors = None
+        self._skill_order = []
 
     def get_tool_names(self, skill: CustomSkill, all_tool_names: set[str]) -> list[str]:
         """返回 Skill 需要的 Tool 中实际存在的那些。"""
