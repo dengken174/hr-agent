@@ -32,6 +32,33 @@ _WRITE_TOOLS = {
 _pending_confirmations: dict[str, dict[str, Any]] = {}
 
 
+def _apply_identity_guard(
+    tools: list[BaseTool], user_id: int, user_role: str
+) -> list[BaseTool]:
+    """非 admin 用户强制 identity 参数（employee_id 等）= user_id，防止越权查询他人数据。"""
+    if user_role == "hr_admin":
+        return tools
+
+    wrapped = []
+    for t in tools:
+        _orig_arun = t._arun
+
+        async def _guarded(**kwargs: Any) -> Any:
+            for param in _IDENTITY_PARAMS:
+                if param in kwargs:
+                    logger.warning(
+                        "Identity guard: overriding %s from %s to user_id=%s",
+                        param, kwargs[param], user_id,
+                    )
+                    kwargs[param] = user_id
+            return await _orig_arun(**kwargs)
+
+        t._arun = _guarded
+        wrapped.append(t)
+
+    return wrapped
+
+
 def _apply_confirmation_guard(
     tools: list[BaseTool], session_id: str
 ) -> list[BaseTool]:
@@ -207,12 +234,13 @@ class HRAgent:
                     tools.append(st)
 
         # 4. general_chat 且无 Skill 匹配 → 无需 Tool，直接 LLM 回复
+        entity = intent.entity if intent.entity else None
         if intent.intent == "general_chat" and not matched_skill:
-            return await self._direct_reply(user_message, user_role)
+            return await self._direct_reply(user_message, user_role, entity)
 
         # 5. 无可用 Tool → 用 Skill 上下文直接回复
         if not tools:
-            return await self._direct_reply_with_skill(user_message, user_role, matched_skill)
+            return await self._direct_reply_with_skill(user_message, user_role, matched_skill, entity)
 
         # 6. 身份绑定：非 admin 用户强制 identity 参数 = user_id
         tools = _apply_identity_guard(tools, user_id, user_role)
@@ -224,8 +252,8 @@ class HRAgent:
         memory = self._memory_mgr.create_summary_memory()
         await self._memory_mgr.load_context(session_id, memory)
 
-        # 8. 构建 Prompt（如有 Skill 匹配则注入 Skill Prompt）
-        prompt = self._build_prompt_with_skill(user_role, matched_skill)
+        # 8. 构建 Prompt（注入 entity 上下文 + Skill Prompt）
+        prompt = self._build_prompt_with_skill(user_role, matched_skill, entity)
         user_input = user_message
         if matched_skill and matched_skill.reply_hint:
             user_input = f"{user_message}\n\n[系统提示：{matched_skill.reply_hint}]"
@@ -289,8 +317,9 @@ class HRAgent:
                     tools.append(st)
 
         # 4. general_chat 且无 Skill 匹配 → 直接 LLM 流式回复
+        entity = intent.entity if intent.entity else None
         if (intent.intent == "general_chat" and not matched_skill) or not tools:
-            async for chunk in self._direct_reply_stream_with_skill(user_message, user_role, matched_skill):
+            async for chunk in self._direct_reply_stream_with_skill(user_message, user_role, matched_skill, entity):
                 yield chunk
             return
 
@@ -303,7 +332,7 @@ class HRAgent:
         # 5. 构建 memory + prompt（局部变量，避免并发覆盖）
         memory = self._memory_mgr.create_summary_memory()
         await self._memory_mgr.load_context(session_id, memory)
-        prompt = self._build_prompt_with_skill(user_role, matched_skill)
+        prompt = self._build_prompt_with_skill(user_role, matched_skill, entity)
         user_input = user_message
         if matched_skill and matched_skill.reply_hint:
             user_input = f"{user_message}\n\n[系统提示：{matched_skill.reply_hint}]"
@@ -343,7 +372,7 @@ class HRAgent:
 
     # ── 内部方法 ─────────────────────────────────────────────────
 
-    def _build_system_text(self, user_role: str) -> str:
+    def _build_system_text(self, user_role: str, entity: dict | None = None) -> str:
         system_text = HR_SYSTEM_PROMPT
         if user_role == "interviewer":
             system_text += "\n## 当前用户：面试者\n你只能提供面试相关信息、公司介绍和福利政策。"
@@ -351,21 +380,44 @@ class HRAgent:
             system_text += "\n## 当前用户：员工\n你可以查询该员工自己的信息，以及所有公开的制度政策。"
         elif user_role == "hr_admin":
             system_text += "\n## 当前用户：HR 管理员\n你有权查询管辖范围内员工信息、进行审批操作。请注意合规。"
+        # 注入 entity 上下文，帮助 LLM 理解用户具体意图
+        if entity:
+            parts = []
+            etype = entity.get("type", "")
+            if etype:
+                type_labels = {
+                    "salary": "薪资查询", "attendance": "考勤查询", "leave_balance": "假期余额",
+                    "calendar": "日程查询", "task": "任务查询", "profile": "个人信息",
+                    "employee": "员工信息", "team": "团队成员", "org": "组织架构",
+                    "benefit": "福利政策", "company": "公司介绍", "doc": "文档查询",
+                    "leave": "请假/年假", "interview": "面试相关", "onboarding": "入职相关",
+                    "approve": "审批通过", "reject": "审批驳回",
+                    "query_my": "我的审批", "query_pending": "待审批",
+                    "mail": "邮件", "sheet": "表格", "approval": "发起审批",
+                }
+                label = type_labels.get(etype, etype)
+                parts.append(f"用户意图: {label}")
+            for key in ("name", "topic", "action", "target", "date"):
+                val = entity.get(key, "")
+                if val:
+                    parts.append(f"{key}={val}")
+            if parts:
+                system_text += f"\n\n## 用户意图上下文\n" + " | ".join(parts)
         return system_text
 
-    def _build_prompt(self, user_role: str) -> ChatPromptTemplate:
+    def _build_prompt(self, user_role: str, entity: dict | None = None) -> ChatPromptTemplate:
         return ChatPromptTemplate.from_messages([
-            ("system", self._build_system_text(user_role)),
+            ("system", self._build_system_text(user_role, entity)),
             MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
-    def _build_prompt_with_skill(self, user_role: str, skill: CustomSkill | None = None) -> ChatPromptTemplate:
-        """构建 Prompt，如有自定义 Skill 匹配则注入 Skill 执行指令。"""
-        system_text = self._build_system_text(user_role)
+    def _build_prompt_with_skill(self, user_role: str, skill: CustomSkill | None = None, entity: dict | None = None) -> ChatPromptTemplate:
+        """构建 Prompt，如有自定义 Skill 匹配则注入 Skill 执行指令，同时注入 entity 上下文。"""
+        system_text = self._build_system_text(user_role, entity)
         if skill:
-            system_text += f"\n\n## 🔧 自定义业务技能: {skill.display_name}\n{skill.system_prompt}"
+            system_text += f"\n\n## 自定义业务技能: {skill.display_name}\n{skill.system_prompt}"
         return ChatPromptTemplate.from_messages([
             ("system", system_text),
             MessagesPlaceholder(variable_name="chat_history"),
@@ -373,20 +425,20 @@ class HRAgent:
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
-    async def _direct_reply(self, user_message: str, user_role: str) -> str:
+    async def _direct_reply(self, user_message: str, user_role: str, entity: dict | None = None) -> str:
         response = await self._llm.ainvoke([
-            {"role": "system", "content": self._build_system_text(user_role)},
+            {"role": "system", "content": self._build_system_text(user_role, entity)},
             {"role": "user", "content": user_message},
         ])
         return response.content
 
     async def _direct_reply_with_skill(
-        self, user_message: str, user_role: str, skill: CustomSkill | None
+        self, user_message: str, user_role: str, skill: CustomSkill | None, entity: dict | None = None,
     ) -> str:
         """带 Skill 上下文的无 Tool 对话。"""
-        system_text = self._build_system_text(user_role)
+        system_text = self._build_system_text(user_role, entity)
         if skill:
-            system_text += f"\n\n## 🔧 自定义业务技能: {skill.display_name}\n{skill.system_prompt}"
+            system_text += f"\n\n## 自定义业务技能: {skill.display_name}\n{skill.system_prompt}"
         user_input = user_message
         if skill and skill.reply_hint:
             user_input = f"{user_message}\n\n[系统提示：{skill.reply_hint}]"
@@ -396,9 +448,9 @@ class HRAgent:
         ])
         return response.content
 
-    async def _direct_reply_stream(self, user_message: str, user_role: str) -> AsyncIterator[str]:
+    async def _direct_reply_stream(self, user_message: str, user_role: str, entity: dict | None = None) -> AsyncIterator[str]:
         stream = self._llm.astream([
-            {"role": "system", "content": self._build_system_text(user_role)},
+            {"role": "system", "content": self._build_system_text(user_role, entity)},
             {"role": "user", "content": user_message},
         ])
         async for chunk in stream:
@@ -406,10 +458,10 @@ class HRAgent:
                 yield chunk.content
 
     async def _direct_reply_stream_with_skill(
-        self, user_message: str, user_role: str, skill: CustomSkill | None
+        self, user_message: str, user_role: str, skill: CustomSkill | None, entity: dict | None = None,
     ) -> AsyncIterator[str]:
         """带 Skill 上下文的流式无 Tool 对话。"""
-        system_text = self._build_system_text(user_role)
+        system_text = self._build_system_text(user_role, entity)
         if skill:
             system_text += f"\n\n## 自定义业务技能: {skill.display_name}\n{skill.system_prompt}"
         user_input = user_message

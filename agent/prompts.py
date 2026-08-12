@@ -49,7 +49,7 @@ INTENT_FEWSHOT_EXAMPLES = """
 
 ## 示例 6
 用户: "通过张三的请假申请"
-输出: {"intent": "approval_action", "entity": {"type": "leave", "action": "approve", "target": "张三"}}
+输出: {"intent": "approval_action", "entity": {"type": "approve", "target": "张三"}}
 
 ## 示例 7
 用户: "你好"
@@ -68,9 +68,18 @@ INTENT_CLASSIFICATION_PROMPT = f"""分析用户输入，输出 JSON 格式的意
 - approval_action: 审批操作（通过、驳回、查看审批列表）
 - general_chat: 闲聊、打招呼、与 HR 无关的问题
 
+## entity.type 可选值（按意图分组）
+- search_own_info: salary | attendance | leave_balance | calendar | task | profile
+- search_others_info: employee | team | org | sheet
+- policy_query: benefit | company | doc
+- process_query: leave | interview | onboarding
+- start_operation: leave | doc | calendar | task | mail | sheet | approval
+- approval_action: approve | reject | query_my | query_pending | detail
+- general_chat: 不需要 entity
+
 ## 输出格式
 严格输出 JSON，不要加任何额外文字：
-{{"intent": "<intent_name>", "entity": {{...}}}}
+{{"intent": "<intent_name>", "entity": {{"type": "<entity_type>", ...}}}}
 
 {INTENT_FEWSHOT_EXAMPLES}
 
