@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS users (
     open_id     VARCHAR(128) DEFAULT NULL,
     voice_enabled BOOLEAN DEFAULT TRUE,
     voice_rate    VARCHAR(8) DEFAULT '+20%',
-    created_at  DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)
+    created_at  DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY idx_open_id (open_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 对话历史（替代 agent/memory.py 中 asyncpg 的 messages 表）

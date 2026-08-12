@@ -77,6 +77,16 @@ class ConversationRepo:
                 rows = await cur.fetchall()
                 return list(reversed(rows))
 
+    async def delete_session(self, session_id: str, user_id: int) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM conversations WHERE session_id = %s AND user_id = %s",
+                    (session_id, user_id),
+                )
+                return cur.rowcount > 0
+
     async def list_sessions(self, user_id: int) -> list[dict]:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -187,6 +197,16 @@ class KnowledgeRepo:
                 return [r[0] for r in rows]
 
     async def search(self, query: str, top_k: int = 5) -> list[dict]:
+        # 混合检索：双路并行 + RRF 融合
+        try:
+            from db.vector_store import hybrid_search
+            results = await hybrid_search(query, top_k)
+            if results:
+                return results
+        except Exception:
+            logger.debug("Hybrid search unavailable, falling back to keyword search")
+
+        # 回退: MySQL LIKE 关键词搜索
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:

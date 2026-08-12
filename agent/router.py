@@ -64,7 +64,8 @@ def route_tools(intent: IntentResult, all_tools: Sequence[BaseTool]) -> list[Bas
     """
     target_names = INTENT_TOOL_MAP.get(intent.intent)
     if target_names is None:
-        return list(all_tools)
+        # Fail closed: unknown intent = general_chat (no tools, safest path)
+        return []
 
     if not target_names:
         return []

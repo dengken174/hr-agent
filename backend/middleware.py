@@ -16,7 +16,10 @@ logger = logging.getLogger("backend.middleware")
 
 # ── JWT 配置 ──────────────────────────────────────────────────────────
 
-JWT_SECRET = config.llm.api_key[:32] or "hr-agent-dev-secret-change-me"
+import os as _os
+JWT_SECRET = _os.getenv("JWT_SECRET", "")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET environment variable is required. Generate: python -c 'import secrets; print(secrets.token_hex(32))'")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24
 
@@ -54,28 +57,17 @@ def verify_token(token: str) -> dict | None:
         return None
 
 
-# ── Mock 用户（仅开发环境 DB 不可用时的降级）─────────────────────────
+# ── Mock 用户（仅 DEV_MODE=1 时启用，DB 故障时拒绝登录而非降级到 mock）───
 
-MOCK_USERS = {
-    "admin": {
-        "password": hash_password("admin123"),
-        "user_id": 2001,
-        "role": "hr_admin",
-        "display_name": "HR Admin",
-    },
-    "employee": {
-        "password": hash_password("emp123"),
-        "user_id": 1001,
-        "role": "employee",
-        "display_name": "张三",
-    },
-    "interviewer": {
-        "password": hash_password("int123"),
-        "user_id": 3001,
-        "role": "interviewer",
-        "display_name": "面试者",
-    },
-}
+_DEV_MODE = _os.getenv("DEV_MODE", "") == "1"
+
+MOCK_USERS: dict[str, dict] = {}
+if _DEV_MODE:
+    _mock_pw = _os.getenv("DEV_MOCK_PASSWORD", "dev123456")
+    MOCK_USERS = {
+        "admin": {"password": hash_password(_mock_pw), "user_id": 2001, "role": "hr_admin", "display_name": "Dev Admin"},
+        "employee": {"password": hash_password(_mock_pw), "user_id": 1001, "role": "employee", "display_name": "Dev Employee"},
+    }
 
 
 # ── 鉴权依赖 ──────────────────────────────────────────────────────────

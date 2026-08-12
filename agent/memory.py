@@ -26,17 +26,16 @@ class RedisSessionBuffer:
         self._fallback: dict[str, list[dict]] = {}
 
     async def _ensure_connected(self):
-        if not self._available:
+        if self._redis is not None:
             return
-        if self._redis is None:
-            try:
-                import redis.asyncio as aioredis
-                self._redis = await aioredis.from_url(self._redis_url, decode_responses=True)
-                await self._redis.ping()
-            except Exception:
-                logger.warning("Redis unavailable, using in-memory session buffer")
-                self._available = False
-                self._redis = None
+        try:
+            import redis.asyncio as aioredis
+            self._redis = await aioredis.from_url(self._redis_url, decode_responses=True)
+            await self._redis.ping()
+            self._available = True
+        except Exception:
+            self._available = False
+            self._redis = None
 
     def _key(self, session_id: str) -> str:
         return f"session:{session_id}"
@@ -64,14 +63,13 @@ class RedisSessionBuffer:
         max_messages = self._max_rounds * 2
         if len(msgs) > max_messages:
             msgs = msgs[-max_messages:]
-        if not self._available:
-            self._fallback[key] = msgs
-        else:
-            try:
+        try:
+            if self._redis:
                 await self._redis.setex(key, self._ttl, json.dumps(msgs, ensure_ascii=False))
-            except Exception:
+            else:
                 self._fallback[key] = msgs
-                self._available = False
+        except Exception:
+            self._fallback[key] = msgs
 
     async def clear(self, session_id: str):
         key = self._key(session_id)
@@ -102,9 +100,10 @@ class MySQLChatHistory:
     async def _get_pool(self):
         from db.connection import get_pool
         try:
-            return await get_pool()
+            pool = await get_pool()
+            self._available = True  # retry succeeded, un-latch
+            return pool
         except Exception:
-            self._available = False
             return None
 
     async def save_message(
@@ -116,8 +115,6 @@ class MySQLChatHistory:
         intent: str = "",
         tool_calls: str = "",
     ):
-        if not self._available:
-            return
         try:
             import uuid
             pool = await self._get_pool()
@@ -130,12 +127,9 @@ class MySQLChatHistory:
                         (uuid.uuid4().hex, session_id, user_id, role, content, intent),
                     )
         except Exception:
-            self._available = False
             logger.warning("MySQL unavailable, chat history not persisted")
 
     async def get_history(self, session_id: str, limit: int = 50) -> list[dict]:
-        if not self._available:
-            return []
         try:
             import aiomysql
             pool = await self._get_pool()
@@ -150,7 +144,6 @@ class MySQLChatHistory:
                     rows = await cur.fetchall()
                     return [dict(r) for r in reversed(rows)]
         except Exception:
-            self._available = False
             return []
 
     async def close(self):

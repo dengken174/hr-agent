@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
 from backend.middleware import get_current_user
@@ -47,14 +47,6 @@ async def chat_stream(req: ChatRequest, user: dict = Depends(get_current_user)):
         except Exception as e:
             logger.exception("Chat stream error")
             yield {"event": "error", "data": json.dumps({"error": str(e)})}
-        finally:
-            # 持久化对话到 MySQL
-            try:
-                await _conv_repo.save(session_id=req.session_id, user_id=user_id, role="user", content=req.message)
-                if full_reply:
-                    await _conv_repo.save(session_id=req.session_id, user_id=user_id, role="assistant", content=full_reply)
-            except Exception:
-                logger.warning("Failed to save conversation to MySQL")
 
     return EventSourceResponse(event_generator())
 
@@ -75,13 +67,6 @@ async def chat_sync(req: ChatRequest, user: dict = Depends(get_current_user)):
         user_role=user_role,
     )
 
-    # 持久化对话到 MySQL
-    try:
-        await _conv_repo.save(session_id=req.session_id, user_id=user_id, role="user", content=req.message)
-        await _conv_repo.save(session_id=req.session_id, user_id=user_id, role="assistant", content=reply)
-    except Exception:
-        logger.warning("Failed to save conversation to MySQL")
-
     return ChatResponse(reply=reply, session_id=req.session_id)
 
 
@@ -94,6 +79,18 @@ async def list_sessions(user: dict = Depends(get_current_user)):
     except Exception:
         logger.warning("Failed to list sessions, returning empty")
         return []
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: str, user: dict = Depends(get_current_user)):
+    """删除指定会话及其所有消息。"""
+    try:
+        ok = await _conv_repo.delete_session(session_id, user["user_id"])
+        if ok:
+            return {"status": "deleted", "session_id": session_id}
+    except Exception:
+        logger.warning("Failed to delete session %s", session_id)
+    raise HTTPException(status_code=404, detail="会话不存在或无权删除")
 
 
 @router.get("/history")

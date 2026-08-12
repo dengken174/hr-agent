@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Any, AsyncIterator
 
 from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
@@ -17,33 +18,114 @@ from agent.skill_manager import CustomSkill, skill_manager
 
 logger = logging.getLogger(__name__)
 
+# 需要绑定调用者身份的参数名
+_IDENTITY_PARAMS = {"employee_id", "applicant_id", "operator_id", "assignee_id"}
+
+# 写入类工具 — 需要用户确认才能执行
+_WRITE_TOOLS = {
+    "approval_start_approval", "approval_approve_request", "approval_reject_request",
+    "feishu_submit_leave_request", "feishu_create_doc", "feishu_create_calendar_event",
+    "feishu_create_task", "feishu_send_feishu_mail", "feishu_write_sheet",
+}
+
+# 待确认操作：session_id → {tool, args}
+_pending_confirmations: dict[str, dict[str, Any]] = {}
+
+
+def _apply_confirmation_guard(
+    tools: list[BaseTool], session_id: str
+) -> list[BaseTool]:
+    """对写入类工具包装确认步骤：首次调用返回确认提示，用户确认后才执行。"""
+    wrapped = []
+    for t in tools:
+        if t.name not in _WRITE_TOOLS:
+            wrapped.append(t)
+            continue
+
+        _orig_arun = t._arun
+
+        def _make_confirmed(orig, tname, sid):
+            async def _guarded(**kwargs):
+                pending = _pending_confirmations.get(sid)
+                if pending and pending["tool"] == tname:
+                    # 用户已确认，执行并从待确认列表中移除
+                    del _pending_confirmations[sid]
+                    return await orig(**kwargs)
+                # 首次调用：存储并返回确认提示
+                _pending_confirmations[sid] = {"tool": tname, "args": kwargs}
+                return (
+                    f"⚠️ 确认操作：{tname}\n"
+                    f"参数：{kwargs}\n\n"
+                    f"请回复「确认」执行此操作，或回复「取消」放弃。"
+                )
+            return _guarded
+
+        t._arun = _make_confirmed(_orig_arun, t.name, session_id)
+        wrapped.append(t)
+
+    return wrapped
+
+
+def _check_pending_confirmation(session_id: str, user_message: str) -> str | None:
+    """检查用户是否在对 pending 操作做确认/取消。返回响应文本或 None（继续正常流程）。"""
+    pending = _pending_confirmations.get(session_id)
+    if not pending:
+        return None
+
+    msg = user_message.strip()
+    if msg in ("确认", "confirm", "yes", "是", "好的", "可以", "ok"):
+        # 保留 pending，下次 tool 调用时会执行
+        return None  # 继续走 agent 流程，tool guard 检测到 pending 会放行
+    elif msg in ("取消", "cancel", "no", "否", "不要", "算了"):
+        del _pending_confirmations[session_id]
+        return "已取消操作。"
+    else:
+        # 用户说了别的内容，取消 pending 并按新消息处理
+        del _pending_confirmations[session_id]
+        return None
+
 
 # ── MCP Server 进程启动配置 ─────────────────────────────────────────
+
+# MCP 子进程需要继承的环境变量
+def _mcp_inherit_env() -> dict[str, str]:
+    env = {
+        "PYTHONPATH": os.path.dirname(os.path.dirname(__file__)),
+        "HF_ENDPOINT": os.environ.get("HF_ENDPOINT", "https://hf-mirror.com"),
+        "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE", "1"),
+        "TRANSFORMERS_OFFLINE": os.environ.get("TRANSFORMERS_OFFLINE", "1"),
+    }
+    for key in ("DEEPSEEK_API_KEY", "FEISHU_APP_ID", "FEISHU_APP_SECRET",
+                "MYSQL_HOST", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
+    return env
+
 
 MCP_SERVER_CONFIG: dict[str, dict[str, Any]] = {
     "hris": {
         "transport": "stdio",
         "command": "python",
         "args": ["-m", "mcp_servers.hris.server"],
-        "env": {},
+        "env": _mcp_inherit_env(),
     },
     "feishu": {
         "transport": "stdio",
         "command": "python",
         "args": ["-m", "mcp_servers.feishu.server"],
-        "env": {},
+        "env": _mcp_inherit_env(),
     },
     "approval": {
         "transport": "stdio",
         "command": "python",
         "args": ["-m", "mcp_servers.approval.server"],
-        "env": {},
+        "env": _mcp_inherit_env(),
     },
     "knowledge": {
         "transport": "stdio",
         "command": "python",
         "args": ["-m", "mcp_servers.knowledge.server"],
-        "env": {},
+        "env": _mcp_inherit_env(),
     },
 }
 
@@ -70,8 +152,6 @@ class HRAgent:
         )
         self._mcp_client: MultiServerMCPClient | None = None
         self._all_tools: list[BaseTool] = []
-        self._agent_executor: AgentExecutor | None = None
-        self._memory: ConversationBufferWindowMemory | None = None
 
     # ── 生命周期 ─────────────────────────────────────────────────
 
@@ -134,9 +214,15 @@ class HRAgent:
         if not tools:
             return await self._direct_reply_with_skill(user_message, user_role, matched_skill)
 
-        # 7. 构建 memory
-        self._memory = self._memory_mgr.create_summary_memory()
-        await self._memory_mgr.load_context(session_id, self._memory)
+        # 6. 身份绑定：非 admin 用户强制 identity 参数 = user_id
+        tools = _apply_identity_guard(tools, user_id, user_role)
+
+        # 6.5 写入工具确认守卫
+        tools = _apply_confirmation_guard(tools, session_id)
+
+        # 7. 构建 memory（每次调用独立，避免并发覆盖实例属性）
+        memory = self._memory_mgr.create_summary_memory()
+        await self._memory_mgr.load_context(session_id, memory)
 
         # 8. 构建 Prompt（如有 Skill 匹配则注入 Skill Prompt）
         prompt = self._build_prompt_with_skill(user_role, matched_skill)
@@ -144,23 +230,23 @@ class HRAgent:
         if matched_skill and matched_skill.reply_hint:
             user_input = f"{user_message}\n\n[系统提示：{matched_skill.reply_hint}]"
 
-        # 9. 创建 AgentExecutor
+        # 9. 创建 AgentExecutor（局部变量，不共享给其他并发请求）
         agent = create_tool_calling_agent(
             llm=self._llm,
             tools=tools,
             prompt=prompt,
         )
-        self._agent_executor = AgentExecutor(
+        agent_executor = AgentExecutor(
             agent=agent,
             tools=tools,
-            memory=self._memory,
+            memory=memory,
             max_iterations=config.agent_max_iterations,
             verbose=True,
             handle_parsing_errors=True,
         )
 
         # 10. 执行
-        result = await self._agent_executor.ainvoke({"input": user_input})
+        result = await agent_executor.ainvoke({"input": user_input})
         output = result.get("output", "")
 
         # 9. 持久化对话
@@ -208,25 +294,31 @@ class HRAgent:
                 yield chunk
             return
 
-        # 5. 构建 memory + prompt
-        self._memory = self._memory_mgr.create_summary_memory()
-        await self._memory_mgr.load_context(session_id, self._memory)
+        # 4.5 身份绑定：非 admin 用户强制 identity 参数 = user_id
+        tools = _apply_identity_guard(tools, user_id, user_role)
+
+        # 4.6 写入工具确认守卫
+        tools = _apply_confirmation_guard(tools, session_id)
+
+        # 5. 构建 memory + prompt（局部变量，避免并发覆盖）
+        memory = self._memory_mgr.create_summary_memory()
+        await self._memory_mgr.load_context(session_id, memory)
         prompt = self._build_prompt_with_skill(user_role, matched_skill)
         user_input = user_message
         if matched_skill and matched_skill.reply_hint:
             user_input = f"{user_message}\n\n[系统提示：{matched_skill.reply_hint}]"
 
-        # 6. 创建 AgentExecutor
+        # 6. 创建 AgentExecutor（局部变量）
         agent = create_tool_calling_agent(llm=self._llm, tools=tools, prompt=prompt)
-        self._agent_executor = AgentExecutor(
-            agent=agent, tools=tools, memory=self._memory,
+        agent_executor = AgentExecutor(
+            agent=agent, tools=tools, memory=memory,
             max_iterations=config.agent_max_iterations,
             verbose=True, handle_parsing_errors=True,
         )
 
         # 7. 使用 astream_events 实现 token 级流式
         full_output = ""
-        async for event in self._agent_executor.astream_events(
+        async for event in agent_executor.astream_events(
             {"input": user_input}, version="v2",
         ):
             kind = event.get("event", "")
@@ -238,7 +330,7 @@ class HRAgent:
 
         # 8. 如果流式没产出，回退 ainvoke
         if not full_output:
-            result = await self._agent_executor.ainvoke({"input": user_input})
+            result = await agent_executor.ainvoke({"input": user_input})
             full_output = result.get("output", "")
             yield full_output
 

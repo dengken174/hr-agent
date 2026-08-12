@@ -19,8 +19,14 @@ async def get_pool() -> aiomysql.Pool:
             maxsize=config.mysql.pool_max,
             autocommit=True,
             charset='utf8mb4',
+            pool_recycle=3600,  # recycle connections hourly to survive MySQL restarts
         )
         logger.info("MySQL pool created: %s:%s/%s", config.mysql.host, config.mysql.port, config.mysql.database)
+    # Health check: if pool was closed by a disconnect, recreate it
+    if _pool._closed:
+        logger.warning("MySQL pool closed, recreating...")
+        _pool = None
+        return await get_pool()
     return _pool
 
 
