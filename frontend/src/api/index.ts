@@ -25,6 +25,7 @@ export const getStats = () => api.get('/api/stats')
 export const chatSync = (data: { message: string; session_id?: string; user_id?: number; user_role?: string }) =>
   api.post('/api/chat', data)
 export const getSessions = () => api.get('/api/chat/sessions')
+export const deleteSession = (sessionId: string) => api.delete(`/api/chat/sessions/${sessionId}`)
 export const getChatHistory = (sessionId: string) =>
   api.get('/api/chat/history', { params: { session_id: sessionId } })
 

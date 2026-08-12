@@ -20,6 +20,14 @@
             <span>{{ s.message_count }} 条</span>
             <span>{{ formatSessionTime(s.updated_at) }}</span>
           </div>
+          <el-button
+            class="session-delete"
+            text
+            size="small"
+            @click.stop="chatStore.deleteSession(s.session_id)"
+          >
+            <el-icon><Close /></el-icon>
+          </el-button>
         </div>
         <el-empty v-if="chatStore.sessions.length === 0" description="暂无对话" :image-size="48" />
       </div>
@@ -33,7 +41,7 @@
         <h3>智能对话</h3>
         <div class="header-right">
           <!-- Voice controls -->
-          <div class="voice-controls" v-if="voiceInput.isSupported.value">
+          <div class="voice-controls">
             <el-switch
               v-model="voiceEnabled"
               active-text="语音回复"
@@ -48,6 +56,9 @@
                 @input="voiceRate = voiceRateNum + 'x'"
               />
             </div>
+            <span v-if="voiceTTS.lastError.value" class="tts-error" :title="voiceTTS.lastError.value">
+              <el-icon><WarningFilled /></el-icon> 语音故障
+            </span>
           </div>
           <el-button text size="small" @click="chatStore.clearMessages()">
             <el-icon><Delete /></el-icon>
@@ -157,13 +168,14 @@ import { useChatStore } from '../stores/chat'
 import { useUserStore } from '../stores/user'
 import { useVoiceInput } from '../composables/useVoiceInput'
 import { useVoiceTTS } from '../composables/useVoiceTTS'
+import { audioManager } from '../composables/audioManager'
 
 const chatStore = useChatStore()
 const userStore = useUserStore()
 const inputText = ref('')
 const msgContainer = ref<HTMLElement>()
 
-const md = new MarkdownIt({ breaks: true, linkify: true })
+const md = new MarkdownIt({ breaks: true, linkify: true, html: false })
 
 const quickQuestions = [
   '公司年假有多少天？',
@@ -176,7 +188,7 @@ const quickQuestions = [
 const voiceInput = useVoiceInput()
 const voiceTTS = useVoiceTTS()
 const voiceEnabled = ref(localStorage.getItem('hr-voice-enabled') !== 'false')
-const voiceRate = ref(localStorage.getItem('hr-voice-rate') || '1.2')
+const voiceRate = ref(localStorage.getItem('hr-voice-rate') || '1.2x')
 const voiceRateNum = ref(parseFloat(voiceRate.value))
 
 // Persist voice preferences
@@ -188,7 +200,6 @@ const micDisabled = computed(() =>
   !voiceInput.isSupported.value ||
   voiceInput.status.value === 'processing' ||
   voiceTTS.status.value === 'playing' ||
-  voiceTTS.status.value === 'interrupting' ||
   chatStore.isStreaming
 )
 
@@ -200,10 +211,10 @@ const micButtonType = computed(() => {
   }
 })
 
-// Auto-TTS after agent finishes streaming
+// Auto-TTS after agent finishes streaming (priority=0, low)
 watch(() => chatStore.isStreaming, (newVal, oldVal) => {
   if (!newVal && oldVal && voiceEnabled.value && chatStore.lastReply) {
-    voiceTTS.requestTTS(chatStore.lastReply, undefined, voiceRate.value)
+    voiceTTS.requestTTS(chatStore.lastReply, undefined, voiceRate.value, undefined, 0)
   }
 })
 
@@ -228,7 +239,7 @@ function playRecording(url: string) {
 }
 
 function replayTTS(text: string) {
-  voiceTTS.requestTTS(text, undefined, voiceRate.value)
+  voiceTTS.requestTTS(text, undefined, voiceRate.value, undefined, 1)
 }
 
 function formatDuration(_url: string | undefined): string {
@@ -263,6 +274,9 @@ function formatSessionTime(iso: string): string {
 
 onMounted(() => {
   chatStore.fetchSessions()
+  // Unlock audio on first user click (browser autoplay policy)
+  const unlockOnce = () => { audioManager.unlock(); document.removeEventListener('click', unlockOnce) }
+  document.addEventListener('click', unlockOnce, { once: true })
 })
 
 onUnmounted(() => {
@@ -335,6 +349,27 @@ function handleQuick(q: string) {
 
 .session-item.active {
   background: #d9ecff;
+}
+
+.session-item {
+  position: relative;
+}
+
+.session-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  color: #909399;
+}
+
+.session-item:hover .session-delete {
+  opacity: 1;
+}
+
+.session-delete:hover {
+  color: #f56c6c;
 }
 
 .session-title {
@@ -526,5 +561,14 @@ function handleQuick(q: string) {
   height: 40px;
   width: 40px;
   flex-shrink: 0;
+}
+
+.tts-error {
+  font-size: 12px;
+  color: #f56c6c;
+  cursor: help;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 </style>

@@ -133,5 +133,23 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  return { messages, isStreaming, lastReply, sessionId, sessions, sidebarCollapsed, addMessage, sendMessage, clearMessages, fetchSessions, loadHistory, newSession }
+  async function deleteSession(sid: string) {
+    try {
+      const { deleteSession } = await import('../api/index')
+      await deleteSession(sid)
+      sessions.value = sessions.value.filter(s => s.session_id !== sid)
+      if (sessionId.value === sid) {
+        const next = sessions.value[0]
+        if (next) {
+          await loadHistory(next.session_id)
+        } else {
+          newSession()
+        }
+      }
+    } catch {
+      // silently fail
+    }
+  }
+
+  return { messages, isStreaming, lastReply, sessionId, sessions, sidebarCollapsed, addMessage, sendMessage, clearMessages, fetchSessions, loadHistory, newSession, deleteSession }
 })

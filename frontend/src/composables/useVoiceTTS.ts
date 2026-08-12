@@ -1,94 +1,51 @@
+/**
+ * useVoiceTTS — 语音合成与播放 composable。
+ *
+ * 对接后端 POST /api/tts (SSE 流式分段音频)。
+ * 播放委托给 AudioManager 单例（请求 ID 互斥 + 优先级）。
+ */
 import { ref } from 'vue'
-
-interface TTSChunk {
-  seq: number
-  audio: string
-  text: string
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
-function playWithTimeout(audio: HTMLAudioElement, timeoutMs: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      audio.pause()
-      reject(new Error('playback timeout'))
-    }, timeoutMs)
-    audio.onended = () => { clearTimeout(timer); resolve() }
-    audio.onerror = () => { clearTimeout(timer); reject(new Error('audio error')) }
-    audio.play().catch(() => { clearTimeout(timer); reject(new Error('play() failed')) })
-  })
-}
+import { audioManager } from './audioManager'
 
 export function useVoiceTTS() {
-  const status = ref<'idle' | 'playing' | 'interrupting'>('idle')
+  const status = ref<'idle' | 'playing' | 'error'>('idle')
   const currentSentence = ref('')
+  const lastError = ref('')
+
   let abortController: AbortController | null = null
-  let onDoneCallback: (() => void) | null = null
+  let requestId = '' // current request ID for AudioManager mutual exclusion
 
-  let playQueue: Promise<void> = Promise.resolve()
-  let nextExpectedSeq = 0
-  const pendingChunks = new Map<number, TTSChunk>()
+  let _playPriority: 0 | 1 = 1  // set by requestTTS, used in SSE handler
 
-  let currentAudio: HTMLAudioElement | null = null
-
-  function handleSSEMessage(msg: any) {
+  function handleSSEMessage(msg: any): boolean {
     switch (msg.type) {
       case 'tts_start':
-        nextExpectedSeq = 0
-        pendingChunks.clear()
         break
+
       case 'tts_sentence':
-        if (msg.seq === nextExpectedSeq) {
-          playNext({ seq: msg.seq, audio: msg.audio, text: msg.text })
-        } else {
-          pendingChunks.set(msg.seq, { seq: msg.seq, audio: msg.audio, text: msg.text })
-        }
-        break
-      case 'tts_end':
-        playQueue = playQueue.then(() => {
-          status.value = 'idle'
-          onDoneCallback?.()
+        audioManager.play({
+          requestId: `${requestId}-${msg.seq}`,
+          src: `data:audio/mpeg;base64,${msg.audio}`,
+          priority: _playPriority,
+          onStart: () => { currentSentence.value = msg.text },
+          onEnd: () => { currentSentence.value = '' },
+          onError: (e) => {
+            console.warn('TTS chunk play failed:', e)
+            lastError.value = `播放失败: ${e}`
+          },
         })
         break
+
+      case 'tts_end':
+        lastError.value = ''
+        status.value = 'idle'
+        return true // done
+
       case 'tts_error':
         console.error('TTS sentence error:', msg.message)
-        // Skip this sentence, try next
-        playQueue = playQueue.then(() => {
-          nextExpectedSeq++
-          const next = pendingChunks.get(nextExpectedSeq)
-          if (next) { pendingChunks.delete(nextExpectedSeq); playNext(next) }
-        })
         break
     }
-  }
-
-  function playNext(msg: TTSChunk) {
-    playQueue = playQueue
-      .then(() => playAudioChunk(msg))
-      .then(() => {
-        nextExpectedSeq++
-        const next = pendingChunks.get(nextExpectedSeq)
-        if (next) {
-          pendingChunks.delete(nextExpectedSeq)
-          playNext(next)
-        }
-      })
-  }
-
-  async function playAudioChunk(msg: TTSChunk): Promise<void> {
-    currentSentence.value = msg.text
-    currentAudio = new Audio(`data:audio/mpeg;base64,${msg.audio}`)
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        await playWithTimeout(currentAudio, 5000)
-        return
-      } catch {
-        if (attempt < 2) await sleep([2000, 4000][attempt])
-      }
-    }
+    return false
   }
 
   async function requestTTS(
@@ -96,13 +53,14 @@ export function useVoiceTTS() {
     voice?: string,
     rate?: string,
     onDone?: () => void,
+    priority: 0 | 1 = 1,
   ) {
     stopTTS()
+    _playPriority = priority
+    requestId = `tts-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     abortController = new AbortController()
-    nextExpectedSeq = 0
-    pendingChunks.clear()
     status.value = 'playing'
-    onDoneCallback = onDone || null
+    lastError.value = ''
 
     const token = localStorage.getItem('token')
     try {
@@ -113,41 +71,50 @@ export function useVoiceTTS() {
         signal: abortController.signal,
       })
 
+      if (!resp.ok) throw new Error(`TTS server error: ${resp.status}`)
+
       const reader = resp.body?.getReader()
-      if (!reader) return
+      if (!reader) throw new Error('No response body')
+
       const decoder = new TextDecoder()
       let buffer = ''
+      let done = false
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
+      while (!done) {
+        const { done: streamDone, value } = await reader.read()
+        if (streamDone) break
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue
           try {
-            handleSSEMessage(JSON.parse(line.slice(6)))
-          } catch { /* skip */ }
+            done = handleSSEMessage(JSON.parse(line.slice(6)))
+          } catch { /* skip parse errors */ }
         }
       }
+
+      if (done) onDone?.()
     } catch (e: any) {
       if (e.name !== 'AbortError') {
         console.error('TTS request failed:', e)
-        status.value = 'idle'
+        lastError.value = e.message || '语音合成失败'
+        status.value = 'error'
       }
     }
   }
 
   function stopTTS() {
-    if (status.value !== 'playing') return
-    status.value = 'interrupting'
-    abortController?.abort()
-    currentAudio?.pause()
-    currentAudio = null
-    pendingChunks.clear()
-    playQueue = playQueue.then(() => { status.value = 'idle' })
+    if (requestId) {
+      audioManager.stopAll() // stop any audio from previous request
+      abortController?.abort()
+    }
+    status.value = 'idle'
+    currentSentence.value = ''
   }
 
-  return { status, currentSentence, requestTTS, stopTTS }
+  return { status, currentSentence, lastError, requestTTS, stopTTS }
 }
+
+// Re-export unlock for page-level integration
+export { audioManager }
