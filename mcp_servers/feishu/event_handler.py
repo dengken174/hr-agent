@@ -272,10 +272,17 @@ async def handle_webhook(raw_body: dict, headers: dict) -> dict:
 
     backend 的 FastAPI 路由 /feishu/webhook 调用此函数。
     流程：
-      1. 验证签名/Token
+      1. 验证 Token
       2. 如果是 URL 验证，返回 challenge
       3. 解析事件 → 路由 → Agent 处理 → 回复
     """
+    # 验证 Verification Token（防伪造请求）
+    token = headers.get("x-lark-request-token", "") or headers.get("X-Lark-Request-Token", "")
+    expected = config.feishu.verification_token
+    if expected and token != expected:
+        logger.warning("Feishu webhook: invalid verification token")
+        return {"status": "rejected", "reason": "invalid token"}
+
     # URL 验证回调
     if raw_body.get("type") == "url_verification":
         challenge = raw_body.get("challenge", "")

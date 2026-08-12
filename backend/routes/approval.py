@@ -1,5 +1,6 @@
 """审批管理端点。"""
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -7,12 +8,47 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from backend.middleware import get_current_user
 from backend.models import ApprovalAction, ApprovalItem
-from db.repositories import ApprovalRepo
+from db.repositories import ApprovalRepo, UserRepo
 
 logger = logging.getLogger("backend.routes.approval")
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
 
 _approval_repo = ApprovalRepo()
+_user_repo = UserRepo()
+
+
+async def _notify_applicant(applicant_id: int, title: str, new_status: str, comment: str = ""):
+    """审批结果变化后，推送飞书消息通知申请人。"""
+    try:
+        user = await _user_repo.get_by_id(applicant_id)
+        if not user or not user.get("open_id"):
+            logger.debug("User %s has no open_id, skipping feishu notification", applicant_id)
+            return
+        open_id = user["open_id"]
+    except Exception:
+        logger.debug("Cannot lookup user %s, skipping notification", applicant_id)
+        return
+
+    status_text = "已通过" if new_status == "approved" else "已驳回"
+    msg = f"您的审批「{title}」{status_text}"
+    if comment:
+        msg += f"，备注：{comment}"
+    msg += "。请在系统中查看详情。"
+
+    try:
+        from mcp_servers.feishu.client import feishu_client
+        if not feishu_client.is_configured:
+            logger.info("[mock] Feishu notification to %s: %s", open_id, msg)
+            return
+        content = '{"text":"' + msg.replace('"', '\\"').replace('\n', '\\n') + '"}'
+        await feishu_client.post(
+            "/im/v1/messages",
+            params={"receive_id_type": "open_id"},
+            body={"receive_id": open_id, "msg_type": "text", "content": content},
+        )
+        logger.info("Feishu notification sent to user %s (open_id=%s)", applicant_id, open_id)
+    except Exception:
+        logger.exception("Failed to send feishu notification")
 
 # ── Mock 审批数据 ────────────────────────────────────────────────────
 
@@ -130,11 +166,19 @@ async def action_approval(
 
     new_status = "approved" if action.action == "approve" else "rejected"
 
+    applicant_id = None
+    approval_title = ""
+
     try:
         ok = await _approval_repo.update_status(approval_id, new_status, user["user_id"], action.comment)
         if ok:
             row = await _approval_repo.get_by_id(approval_id)
-            return ApprovalItem(**_to_approval_item(row))
+            applicant_id = row.get("applicant_id") if row else None
+            approval_title = row.get("title", "") if row else ""
+            result = ApprovalItem(**_to_approval_item(row))
+            if applicant_id:
+                await _notify_applicant(applicant_id, approval_title, new_status, action.comment)
+            return result
     except Exception:
         logger.warning("MySQL unavailable for approval action")
 
@@ -144,7 +188,11 @@ async def action_approval(
                 raise HTTPException(status_code=400, detail="该审批已处理")
             a["status"] = new_status
             a["updated_at"] = datetime.now(timezone.utc).isoformat()
+            applicant_id = a.get("applicant_id")
+            approval_title = a.get("title", "")
             logger.info("HR %s %sd approval: %s", user["display_name"], action.action, approval_id)
+            if applicant_id:
+                await _notify_applicant(applicant_id, approval_title, new_status, action.comment)
             return ApprovalItem(**a)
 
     raise HTTPException(status_code=404, detail=f"审批 {approval_id} 不存在")

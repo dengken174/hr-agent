@@ -1,13 +1,16 @@
-"""知识库管理端点。"""
+"""知识库管理端点 — CRUD + 文件上传解析。"""
 
 import logging
+import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 
 from backend.middleware import get_current_user
 from backend.models import KnowledgeDoc, KnowledgeSearchRequest, KnowledgeSearchResult
 from db.repositories import KnowledgeRepo
+from db.document_parser import parse_document, SUPPORTED as SUPPORTED_FORMATS
+from db.chunker import chunk_document
 
 logger = logging.getLogger("backend.routes.knowledge")
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
@@ -82,6 +85,19 @@ async def list_docs(category: str = "", user: dict = Depends(get_current_user)):
         return [KnowledgeDoc(**d) for d in docs]
 
 
+@router.get("/formats")
+async def supported_formats():
+    """返回支持的文档格式列表。"""
+    return {
+        "formats": sorted(SUPPORTED_FORMATS),
+        "office": sorted([f for f in SUPPORTED_FORMATS if f in {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls"}]),
+        "text": sorted([f for f in SUPPORTED_FORMATS if f in {".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm"}]),
+        "image": sorted([f for f in SUPPORTED_FORMATS if f in {".png", ".jpg", ".jpeg", ".tiff", ".bmp"}]),
+        "max_file_size_mb": None,  # 由 nginx/CDN 控制
+        "ocr_supported": True,
+    }
+
+
 @router.get("/categories")
 async def list_categories():
     """列出所有分类。"""
@@ -138,6 +154,7 @@ async def create_doc(data: KnowledgeDoc, user: dict = Depends(get_current_user))
         raise HTTPException(status_code=403, detail="仅 HR 管理员")
     try:
         doc = await _knowledge_repo.create(data.model_dump())
+        await _sync_add_index(doc)
         return KnowledgeDoc(**doc)
     except Exception:
         logger.warning("MySQL unavailable for create, falling back to mock")
@@ -146,6 +163,7 @@ async def create_doc(data: KnowledgeDoc, user: dict = Depends(get_current_user))
         doc["id"] = doc["id"] or f"K{uuid.uuid4().hex[:6].upper()}"
         doc["updated_at"] = datetime.now(timezone.utc).isoformat()
         MOCK_DOCS.append(doc)
+        await _sync_add_index(doc)
         return KnowledgeDoc(**doc)
 
 
@@ -157,6 +175,7 @@ async def update_doc(doc_id: str, data: KnowledgeDoc, user: dict = Depends(get_c
     try:
         doc = await _knowledge_repo.update(doc_id, data.model_dump())
         if doc:
+            await _sync_add_index(doc)
             return KnowledgeDoc(**doc)
     except Exception:
         logger.warning("MySQL unavailable for update, falling back to mock")
@@ -166,6 +185,7 @@ async def update_doc(doc_id: str, data: KnowledgeDoc, user: dict = Depends(get_c
                 updated["id"] = doc_id
                 updated["updated_at"] = datetime.now(timezone.utc).isoformat()
                 MOCK_DOCS[i] = updated
+                await _sync_add_index(updated)
                 return KnowledgeDoc(**updated)
     raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
 
@@ -178,11 +198,161 @@ async def delete_doc(doc_id: str, user: dict = Depends(get_current_user)):
     try:
         ok = await _knowledge_repo.delete(doc_id)
         if ok:
+            await _sync_remove_index(doc_id)
             return {"status": "deleted", "id": doc_id}
     except Exception:
         logger.warning("MySQL unavailable for delete, falling back to mock")
         for i, d in enumerate(MOCK_DOCS):
             if d["id"] == doc_id:
                 MOCK_DOCS.pop(i)
+                await _sync_remove_index(doc_id)
                 return {"status": "deleted", "id": doc_id}
     raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
+
+
+@router.post("/upload")
+async def upload_document(
+    files: list[UploadFile] = File(..., description="文档文件 (PDF/DOCX/PPTX/XLSX/MD/TXT/CSV)"),
+    category: str = Form("", description="分类: policy/benefit/guide/faq"),
+    tags: str = Form("", description="标签，逗号分隔"),
+    enable_ocr: bool = Form(False, description="是否启用图片 OCR"),
+    user: dict = Depends(get_current_user),
+):
+    """上传文档文件，自动解析 → 分块 → 入库 → 建索引。
+
+    支持格式: PDF, DOCX, PPTX, XLSX, MD, TXT, CSV, JSON, HTML, 图片(需启用OCR)
+    每个文件按标题层级智能分块，每个 chunk 作为一条知识库文档存储。
+    """
+    if user["role"] != "hr_admin":
+        raise HTTPException(status_code=403, detail="仅 HR 管理员可上传文档")
+
+    if not files:
+        raise HTTPException(status_code=400, detail="请选择要上传的文件")
+
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+
+    results = []
+    for file in files:
+        filename = file.filename or "unknown"
+        try:
+            # 1. 读取文件内容
+            file_bytes = await file.read()
+
+            # 2. 解析文档
+            parsed = await parse_document(file_bytes, filename, enable_ocr=enable_ocr)
+            logger.info("Parsed %s: %d chars, %d pages", filename, len(parsed.content), parsed.page_count)
+
+            # 3. 智能分块
+            chunks = chunk_document(
+                parsed.content,
+                doc_title=parsed.title,
+                chunk_size=500,
+                chunk_overlap=80,
+            )
+            logger.info("Chunked %s into %d chunks", filename, len(chunks))
+
+            # 4. 每个 chunk 存入 MySQL + 同步向量索引
+            saved_chunks = []
+            for i, chunk in enumerate(chunks):
+                doc_id = f"{parsed.title[:30]}_{uuid.uuid4().hex[:6]}"
+                chunk_title = chunk.title or parsed.title
+                if len(chunks) > 1:
+                    chunk_title += f" (第{i + 1}段)"
+
+                doc_data = {
+                    "id": doc_id,
+                    "title": chunk_title,
+                    "content": chunk.text,
+                    "category": category or _guess_category(parsed.title, parsed.content),
+                    "tags": tag_list,
+                    "created_by": user["user_id"],
+                }
+                try:
+                    saved = await _knowledge_repo.create(doc_data)
+                    await _sync_add_index(saved)
+                    saved_chunks.append({"id": doc_id, "title": chunk_title, "chars": len(chunk.text)})
+                except Exception:
+                    logger.warning("Failed to save chunk %s/%s", i + 1, len(chunks))
+
+            results.append({
+                "filename": filename,
+                "title": parsed.title,
+                "source_format": parsed.source_format,
+                "chars": len(parsed.content),
+                "pages": parsed.page_count,
+                "chunks": len(chunks),
+                "saved": len(saved_chunks),
+                "details": saved_chunks,
+            })
+
+        except ValueError as e:
+            logger.warning("Parse error for %s: %s", filename, e)
+            results.append({"filename": filename, "error": str(e)})
+        except Exception as e:
+            logger.exception("Unexpected error parsing %s", filename)
+            results.append({"filename": filename, "error": f"解析失败: {e}"})
+
+    success_count = sum(1 for r in results if "error" not in r)
+    return {
+        "message": f"处理完成: {success_count}/{len(files)} 个文件成功",
+        "results": results,
+    }
+
+
+@router.post("/reindex")
+async def reindex_knowledge(user: dict = Depends(get_current_user)):
+    """重建向量索引（HR 管理员操作）。"""
+    if user["role"] != "hr_admin":
+        raise HTTPException(status_code=403, detail="仅 HR 管理员")
+    try:
+        from db.vector_store import build_index
+        docs = await _knowledge_repo.list_all()
+        if not docs:
+            docs = MOCK_DOCS
+        count = await build_index(docs)
+        return {"status": "ok", "indexed": count}
+    except Exception as e:
+        logger.exception("Reindex failed")
+        raise HTTPException(status_code=500, detail=f"索引构建失败: {e}")
+
+
+@router.get("/index/stats")
+async def index_stats():
+    """查看向量索引统计。"""
+    try:
+        from db.vector_store import index_stats as stats
+        return await stats()
+    except Exception:
+        return {"total": 0, "dim": 0, "indexed_docs": 0}
+
+
+async def _sync_add_index(doc: dict):
+    """新增/更新文档后同步到向量索引。"""
+    try:
+        from db.vector_store import add_document
+        await add_document(doc)
+    except Exception:
+        logger.debug("Vector index sync skipped")
+
+
+async def _sync_remove_index(doc_id: str):
+    """删除文档后同步移除向量索引。"""
+    try:
+        from db.vector_store import remove_document
+        await remove_document(doc_id)
+    except Exception:
+        logger.debug("Vector index remove skipped")
+
+
+def _guess_category(title: str, content: str) -> str:
+    """根据文档标题和内容自动推测分类。"""
+    text = f"{title} {content[:500]}".lower()
+    if any(w in text for w in ["入职", "报到", "面试", "招聘", "流程", "指南"]):
+        return "guide"
+    if any(w in text for w in ["福利", "补贴", "年假", "五险一金", "社保", "公积金", "薪酬"]):
+        return "benefit"
+    if any(w in text for w in ["政策", "制度", "规定", "标准", "管理办法"]):
+        return "policy"
+    if any(w in text for w in ["问题", "解答", "常见", "FAQ"]):
+        return "faq"
+    return "policy"

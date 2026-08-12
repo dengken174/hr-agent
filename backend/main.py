@@ -37,10 +37,22 @@ FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期 — 启动时连接 MCP Server，关闭时释放。"""
+    """应用生命周期 — 启动时连接 MCP Server，构建向量索引，关闭时释放。"""
     logger.info("Starting HR Agent backend...")
     await hr_agent.start()
     logger.info("Agent ready with %d tools", len(hr_agent._all_tools))
+
+    # 自动构建知识库向量索引
+    try:
+        from db.vector_store import build_index
+        from db.repositories import KnowledgeRepo
+        docs = await KnowledgeRepo().list_all()
+        if docs:
+            count = await build_index(docs)
+            logger.info("Vector index built: %d documents", count)
+    except Exception:
+        logger.warning("Vector index build skipped (embedding model may not be ready)")
+
     yield
     logger.info("Shutting down...")
     await hr_agent.stop()
@@ -55,9 +67,10 @@ app = FastAPI(
 
 # ── CORS ────────────────────────────────────────────────────────────
 
+_cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in _cors_origins.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

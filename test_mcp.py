@@ -255,6 +255,8 @@ async def test_knowledge():
     server_params = StdioServerParameters(
         command="python",
         args=["-m", "mcp_servers.knowledge.server"],
+        env={"PYTHONPATH": os.path.dirname(__file__), "HF_ENDPOINT": "https://hf-mirror.com",
+             **{k: v for k, v in os.environ.items() if k in ("DEEPSEEK_API_KEY",)}},
     )
 
     print("=" * 50)
