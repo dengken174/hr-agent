@@ -394,6 +394,18 @@ class HRAgent:
     # ── 内部方法 ─────────────────────────────────────────────────
 
     async def _preprocess(self, user_message, session_id, user_id, user_role):
+        # 槽位状态机接管：优先于意图分类（确认词/槽位中间回答会被判成 general_chat）
+        if self._slot_filler.has_pending(session_id):
+            confirmed = self._slot_filler.consume(session_id, user_message)
+            if confirmed is not None:
+                if isinstance(confirmed, str):
+                    return PreprocessResult(direct_reply=confirmed)
+                return PreprocessResult(slot_result=confirmed)
+        elif self._slot_filler.has_active(session_id):
+            result = await self._slot_filler.handle(session_id, user_message, "leave_request", {"type": "leave"})
+            if isinstance(result, str):
+                return PreprocessResult(direct_reply=result)
+
         intent = await intent_classifier.classify(user_message)
         tools = route_tools(intent, self._all_tools)
 
@@ -418,11 +430,6 @@ class HRAgent:
 
         # 2.1 槽位状态机（start_operation + leave）
         if intent.intent == "start_operation" and entity and entity.get("type") == "leave":
-            confirmed = self._slot_filler.consume(session_id, user_message)
-            if confirmed is not None:
-                if isinstance(confirmed, str):
-                    return PreprocessResult(direct_reply=confirmed, intent=intent, entity=entity)
-                return PreprocessResult(slot_result=confirmed, intent=intent, entity=entity, tools=tools)
             result = await self._slot_filler.handle(session_id, user_message, intent.intent, entity)
             if isinstance(result, str):
                 return PreprocessResult(direct_reply=result, intent=intent, entity=entity)

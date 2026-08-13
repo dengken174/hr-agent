@@ -56,6 +56,12 @@ class SlotFiller:
         self._pending_confirms: dict[str, dict] = {}
         self._extractor = extractor or _llm_extract_slots
 
+    def has_pending(self, session_id: str) -> bool:
+        return session_id in self._pending_confirms
+
+    def has_active(self, session_id: str) -> bool:
+        return session_id in self._sessions
+
     async def handle(self, session_id: str, user_message: str, intent: str, entity: dict) -> str | dict:
         slots_def = SLOT_DEFS.get(entity.get("type", "")) if entity else None
         if not slots_def:

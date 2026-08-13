@@ -78,3 +78,30 @@ def test_consume_unrelated_returns_none():
 def test_consume_no_pending_returns_none():
     sf = SlotFiller()
     assert sf.consume("s1", "确认") is None
+
+
+def test_has_pending_false_initially_true_after_fill():
+    sf = SlotFiller(extractor=_fake_full_extractor)
+    assert sf.has_pending("s1") is False
+    asyncio.run(sf.handle("s1", "请年假 8月18到20", "start_operation", {"type": "leave"}))
+    assert sf.has_pending("s1") is True
+
+
+def test_has_active_true_during_collection():
+    sf = SlotFiller(extractor=_fake_full_extractor)
+    assert sf.has_active("s1") is False
+    sf._sessions["s1"] = init_state("leave_request", LEAVE_SLOTS)
+    assert sf.has_active("s1") is True
+
+
+def test_handle_after_fill_moves_active_to_pending():
+    sf = SlotFiller(extractor=_fake_full_extractor)
+    sf._sessions["s1"] = init_state("leave_request", LEAVE_SLOTS)
+    assert sf.has_active("s1") is True
+    assert sf.has_pending("s1") is False
+
+    result = asyncio.run(sf.handle("s1", "请年假 8月18到20", "start_operation", {"type": "leave"}))
+    assert isinstance(result, str)
+
+    assert sf.has_active("s1") is False
+    assert sf.has_pending("s1") is True
