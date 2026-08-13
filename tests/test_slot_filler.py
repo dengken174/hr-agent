@@ -1,7 +1,13 @@
+import asyncio
+
 import pytest
 from agent.slot_filler import (
-    LEAVE_SLOTS, SlotState, init_state, apply_extracted, next_ask, confirm_summary,
+    LEAVE_SLOTS, SlotState, SlotFiller, init_state, apply_extracted, next_ask, confirm_summary,
 )
+
+
+async def _fake_full_extractor(intent, user_message, missing_keys):
+    return {"leave_type": "年假", "start_date": "2026-08-18", "end_date": "2026-08-20"}
 
 
 def test_init_state_marks_all_required_missing():
@@ -35,3 +41,40 @@ def test_confirm_summary_lists_filled_slots():
     summary = confirm_summary(LEAVE_SLOTS, st.slots)
     assert "年假" in summary
     assert "2026-08-18" in summary
+
+
+def test_handle_returns_confirmation_and_stores_pending():
+    sf = SlotFiller(extractor=_fake_full_extractor)
+    entity = {"type": "leave"}
+    result = asyncio.run(sf.handle("s1", "请年假 8月18到20", "start_operation", entity))
+    assert isinstance(result, str)
+    assert "确认" in result
+    assert sf._pending_confirms["s1"]["leave_type"] == "年假"
+
+
+def test_consume_confirm_returns_tool_dict():
+    sf = SlotFiller()
+    sf._pending_confirms["s1"] = {
+        "leave_type": "年假", "start_date": "2026-08-18", "end_date": "2026-08-20",
+    }
+    result = sf.consume("s1", "确认")
+    assert isinstance(result, dict)
+    assert result["tool"] == "feishu_submit_leave_request"
+    assert result["args"]["leave_type"] == "年假"
+
+
+def test_consume_cancel_returns_cancel_string():
+    sf = SlotFiller()
+    sf._pending_confirms["s1"] = {"leave_type": "年假"}
+    assert sf.consume("s1", "取消") == "已取消操作。"
+
+
+def test_consume_unrelated_returns_none():
+    sf = SlotFiller()
+    sf._pending_confirms["s1"] = {"leave_type": "年假"}
+    assert sf.consume("s1", "帮我查工资") is None
+
+
+def test_consume_no_pending_returns_none():
+    sf = SlotFiller()
+    assert sf.consume("s1", "确认") is None

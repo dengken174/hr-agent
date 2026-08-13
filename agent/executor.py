@@ -418,6 +418,11 @@ class HRAgent:
 
         # 2.1 槽位状态机（start_operation + leave）
         if intent.intent == "start_operation" and entity and entity.get("type") == "leave":
+            confirmed = self._slot_filler.consume(session_id, user_message)
+            if confirmed is not None:
+                if isinstance(confirmed, str):
+                    return PreprocessResult(direct_reply=confirmed, intent=intent, entity=entity)
+                return PreprocessResult(slot_result=confirmed, intent=intent, entity=entity, tools=tools)
             result = await self._slot_filler.handle(session_id, user_message, intent.intent, entity)
             if isinstance(result, str):
                 return PreprocessResult(direct_reply=result, intent=intent, entity=entity)

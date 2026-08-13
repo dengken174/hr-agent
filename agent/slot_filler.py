@@ -53,6 +53,7 @@ class SlotFiller:
 
     def __init__(self, extractor=None):
         self._sessions: dict[str, SlotState] = {}
+        self._pending_confirms: dict[str, dict] = {}
         self._extractor = extractor or _llm_extract_slots
 
     async def handle(self, session_id: str, user_message: str, intent: str, entity: dict) -> str | dict:
@@ -71,8 +72,21 @@ class SlotFiller:
         if state.missing:
             return next_ask(slots_def, state.missing[0])
 
+        self._pending_confirms[session_id] = dict(state.slots)
         del self._sessions[session_id]
-        return {"tool": "feishu_submit_leave_request", "args": dict(state.slots)}
+        return confirm_summary(slots_def, state.slots)
+
+    def consume(self, session_id: str, user_message: str) -> str | dict | None:
+        """处理二次确认。返回确认后的 tool dict / 取消文本 / None（当作新消息，丢弃 pending）。"""
+        if session_id not in self._pending_confirms:
+            return None
+        stored_slots = self._pending_confirms.pop(session_id)
+        msg = user_message.strip()
+        if msg in {"确认", "confirm", "yes", "是", "好的", "可以", "ok"}:
+            return {"tool": "feishu_submit_leave_request", "args": stored_slots}
+        if msg in {"取消", "cancel", "no", "否", "不要", "算了"}:
+            return "已取消操作。"
+        return None
 
 
 async def _llm_extract_slots(intent: str, user_message: str, missing_keys: list) -> dict:
