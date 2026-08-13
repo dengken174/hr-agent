@@ -108,4 +108,9 @@ async def _llm_extract_slots(intent: str, user_message: str, missing_keys: list)
     raw = resp.choices[0].message.content or "{}"
     import json, re
     m = re.search(r"\{.*\}", raw, re.DOTALL)
-    return json.loads(m.group(0)) if m else {}
+    if not m:
+        return {}
+    try:
+        return json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return {}

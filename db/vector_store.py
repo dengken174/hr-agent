@@ -13,6 +13,8 @@
 参考 config.rag: retrieval_k=20, rrf_k=60, rerank_top_n=5
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import math

@@ -112,7 +112,7 @@ SLOT_EXTRACTION_PROMPT = """从用户消息中提取以下槽位的值，输出 
 - 提取不到的槽位不要输出
 
 输出格式（严格 JSON，无额外文字）：
-{{"<slot_key>": "<value>"}}
+{"<slot_key>": "<value>"}
 
 用户消息: {user_message}
 """

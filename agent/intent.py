@@ -73,7 +73,10 @@ class IntentClassifier:
         parsed = self._extract_json(raw)
         intent = parsed.get("intent", "general_chat")
         entity = parsed.get("entity", {})
-        confidence = float(parsed.get("confidence", 1.0))
+        try:
+            confidence = float(parsed.get("confidence", 1.0))
+        except (TypeError, ValueError):
+            confidence = 1.0
 
         if intent not in INTENT_LABELS:
             intent = "general_chat"
