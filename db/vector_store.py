@@ -164,7 +164,9 @@ async def build_index(documents: list[dict]) -> int:
     with _lock:
         _index = idx
         _metadata = [{"id": d.get("id", ""), "title": d.get("title", ""),
-                       "content": d.get("content", ""), "category": d.get("category", "")}
+                       "content": d.get("content", ""), "category": d.get("category", ""),
+                       "source": d.get("source", d.get("title", "")),
+                       "section": d.get("section", "")}
                       for d in documents]
         _bm25_corpus = bm25_corpus
         _bm25_doc_ids = bm25_ids
@@ -282,6 +284,8 @@ async def hybrid_search(query: str, top_k: int = 5,
             "content": meta["content"][:300],
             "relevance": round(rrf_scores[idx], 4),
             "category": meta.get("category", ""),
+            "source": meta.get("source", meta.get("title", "")),
+            "section": meta.get("section", ""),
         })
 
     # ── Phase 3: Rerank ─────────────────────────────────────────────
@@ -318,6 +322,8 @@ async def vector_search(query: str, top_k: int = 5) -> list[dict]:
             "content": meta["content"][:300],
             "relevance": round(float((score + 1) / 2), 3),
             "category": meta.get("category", ""),
+            "source": meta.get("source", meta.get("title", "")),
+            "section": meta.get("section", ""),
         })
     return results
 
@@ -398,7 +404,9 @@ async def add_document(doc: dict) -> bool:
     with _lock:
         _index.add(vec)
         _metadata.append({"id": doc.get("id", ""), "title": doc.get("title", ""),
-                           "content": doc.get("content", ""), "category": doc.get("category", "")})
+                           "content": doc.get("content", ""), "category": doc.get("category", ""),
+                           "source": doc.get("source", doc.get("title", "")),
+                           "section": doc.get("section", "")})
         _bm25_corpus.append(tokens)
         _bm25_doc_ids.append(doc.get("id", ""))
         _bm25_N = len(_bm25_corpus)

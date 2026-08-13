@@ -94,7 +94,7 @@ def chunk_document(
                 title=section_title or doc_title,
                 chunk_index=chunk_idx,
                 parent_section=section_text.strip(),
-                metadata={"doc_title": doc_title},
+                metadata={"doc_title": doc_title, "section": section_title or doc_title},
             ))
             chunk_idx += 1
 

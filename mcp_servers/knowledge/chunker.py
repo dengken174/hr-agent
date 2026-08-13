@@ -30,6 +30,7 @@ class DocumentChunker:
                 "content": chunk_text,
                 "metadata": {
                     "title": title,
+                    "section": title,
                     "chunk_index": idx,
                     "start_char": start,
                     "end_char": min(end, len(text)),

@@ -7,15 +7,25 @@ from mcp_servers.knowledge.retriever import hybrid_retriever
 from mcp_servers.knowledge import server_name
 
 
+LOW_RELEVANCE_THRESHOLD = 0.3
+
+
+def is_low_relevance(results: list[dict]) -> bool:
+    if not results:
+        return True
+    return results[0].get("score", 0) < LOW_RELEVANCE_THRESHOLD
+
+
 # ── Tool 实现 ──────────────────────────────────────────────────────────
 
 async def search_knowledge_base(query: str) -> list[types.TextContent]:
     """通用混合检索公司制度文档。"""
     results = await hybrid_retriever.search(query)
-    if not results:
-        return [types.TextContent(type="text", text=f"未找到与 '{query}' 相关的制度文档")]
+    if is_low_relevance(results):
+        return [types.TextContent(type="text", text="未找到与问题相关的明确制度依据")]
     formatted = [{
         "title": r["metadata"].get("title", ""),
+        "section": r["metadata"].get("section", ""),
         "content": r["content"],
         "relevance": round(r.get("rrf_score", r.get("score", 0)), 3),
     } for r in results]
