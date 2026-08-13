@@ -1,5 +1,6 @@
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
@@ -10,13 +11,25 @@ from langchain_core.tools import BaseTool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from config import config
-from agent.intent import IntentResult, intent_classifier
+from agent.intent import IntentResult, intent_classifier, should_refuse, OUT_OF_SCOPE_REPLY
 from agent.memory import MemoryManager, memory_manager
 from agent.prompts import HR_SYSTEM_PROMPT
 from agent.router import route_tools
 from agent.skill_manager import CustomSkill, skill_manager
+from agent.slot_filler import SlotFiller
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PreprocessResult:
+    direct_reply: str | None = None      # 非空则直接返回，不进 Agent
+    tools: list | None = None            # direct_reply 为 None 时生效
+    intent: IntentResult | None = None
+    matched_skill: object | None = None
+    entity: dict | None = None
+    slot_result: dict | None = None      # 槽位填齐后的执行参数
+
 
 # ── LangSmith tracing 初始化（须在 LangChain 组件初始化前设置）─────────
 if config.langsmith.tracing_enabled and config.langsmith.api_key:
@@ -187,6 +200,7 @@ class HRAgent:
         )
         self._mcp_client: MultiServerMCPClient | None = None
         self._all_tools: list[BaseTool] = []
+        self._slot_filler = SlotFiller()
 
     # ── 生命周期 ─────────────────────────────────────────────────
 
@@ -222,33 +236,25 @@ class HRAgent:
         # 0. 热加载 Skill（检测文件变化）
         skill_manager.check_reload()
 
-        # 1. 意图分类
-        intent = await intent_classifier.classify(user_message)
+        # 1~5. 前置处理：意图分类 + 路由 + skill 匹配 + 拒答 + 槽位
+        pre = await self._preprocess(user_message, session_id, user_id, user_role)
+        if pre.direct_reply is not None:
+            return pre.direct_reply
 
-        # 2. Tool 路由
-        tools = route_tools(intent, self._all_tools)
+        intent = pre.intent
+        tools = pre.tools
+        matched_skill = pre.matched_skill
+        entity = pre.entity
 
-        # 3. 自定义 Skill 匹配（热插拔核心）
-        matched_skill = skill_manager.match(user_message)
-        skill_tools: list[BaseTool] = []
-        if matched_skill and matched_skill.tools:
-            all_names = {t.name for t in self._all_tools}
-            skill_tool_names = skill_manager.get_tool_names(matched_skill, all_names)
-            skill_tools = [t for t in self._all_tools if t.name in skill_tool_names]
-            # 合并 Tool（去重）
-            existing_names = {t.name for t in tools}
-            for st in skill_tools:
-                if st.name not in existing_names:
-                    tools.append(st)
-
-        # 4. general_chat 且无 Skill 匹配 → 无需 Tool，直接 LLM 回复
-        entity = intent.entity if intent.entity else None
-        if intent.intent == "general_chat" and not matched_skill:
-            return await self._direct_reply(user_message, user_role, entity)
-
-        # 5. 无可用 Tool → 用 Skill 上下文直接回复
-        if not tools:
-            return await self._direct_reply_with_skill(user_message, user_role, matched_skill, entity)
+        # 槽位已填齐：直接构造写工具调用，跳过确认守卫
+        if pre.slot_result is not None:
+            slot_args = pre.slot_result["args"]
+            slot_args["employee_id"] = str(user_id)  # 身份绑定（槽位路径跳过了身份守卫，需手动注入）
+            tool = next((t for t in self._all_tools if t.name == "feishu_submit_leave_request"), None)
+            if tool is None:
+                return "请假功能暂不可用，请联系 HR BP"
+            result = await tool._arun(**slot_args)
+            return result
 
         # 6. 身份绑定：非 admin 用户强制 identity 参数 = user_id
         tools = _apply_identity_guard(tools, user_id, user_role)
@@ -288,7 +294,7 @@ class HRAgent:
         )
         output = result.get("output", "")
 
-        # 9. 持久化对话
+        # 11. 持久化对话
         await self._memory_mgr.save_turn(
             session_id=session_id,
             user_id=user_id,
@@ -310,28 +316,28 @@ class HRAgent:
         # 0. 热加载 Skill
         skill_manager.check_reload()
 
-        # 1. 意图分类
-        intent = await intent_classifier.classify(user_message)
+        # 前置处理：意图分类 + 路由 + skill 匹配 + 拒答 + 槽位
+        pre = await self._preprocess(user_message, session_id, user_id, user_role)
+        if pre.direct_reply is not None:
+            # _preprocess 已生成完整回复（out_of_scope/澄清/槽位追问/general_chat 直答），直接产出
+            yield pre.direct_reply
+            return
 
-        # 2. Tool 路由
-        tools = route_tools(intent, self._all_tools)
+        intent = pre.intent
+        tools = pre.tools
+        matched_skill = pre.matched_skill
+        entity = pre.entity
 
-        # 3. 自定义 Skill 匹配
-        matched_skill = skill_manager.match(user_message)
-        if matched_skill and matched_skill.tools:
-            all_names = {t.name for t in self._all_tools}
-            skill_tool_names = skill_manager.get_tool_names(matched_skill, all_names)
-            skill_tools = [t for t in self._all_tools if t.name in skill_tool_names]
-            existing_names = {t.name for t in tools}
-            for st in skill_tools:
-                if st.name not in existing_names:
-                    tools.append(st)
-
-        # 4. general_chat 且无 Skill 匹配 → 直接 LLM 流式回复
-        entity = intent.entity if intent.entity else None
-        if (intent.intent == "general_chat" and not matched_skill) or not tools:
-            async for chunk in self._direct_reply_stream_with_skill(user_message, user_role, matched_skill, entity):
-                yield chunk
+        # 槽位已填齐：直接执行写工具后 yield 结果
+        if pre.slot_result is not None:
+            slot_args = pre.slot_result["args"]
+            slot_args["employee_id"] = str(user_id)  # 身份绑定（槽位路径跳过了身份守卫，需手动注入）
+            tool = next((t for t in self._all_tools if t.name == "feishu_submit_leave_request"), None)
+            if tool is None:
+                yield "请假功能暂不可用，请联系 HR BP"
+            else:
+                result = await tool._arun(**slot_args)
+                yield result
             return
 
         # 4.5 身份绑定：非 admin 用户强制 identity 参数 = user_id
@@ -386,6 +392,56 @@ class HRAgent:
         )
 
     # ── 内部方法 ─────────────────────────────────────────────────
+
+    async def _preprocess(self, user_message, session_id, user_id, user_role):
+        intent = await intent_classifier.classify(user_message)
+        tools = route_tools(intent, self._all_tools)
+
+        matched_skill = skill_manager.match(user_message)
+        if matched_skill and matched_skill.tools:
+            all_names = {t.name for t in self._all_tools}
+            skill_tool_names = skill_manager.get_tool_names(matched_skill, all_names)
+            skill_tools = [t for t in self._all_tools if t.name in skill_tool_names]
+            existing = {t.name for t in tools}
+            for st in skill_tools:
+                if st.name not in existing:
+                    tools.append(st)
+
+        entity = intent.entity if intent.entity else None
+
+        # 2.2 拒答
+        if should_refuse(intent):
+            if intent.intent == "out_of_scope":
+                return PreprocessResult(direct_reply=OUT_OF_SCOPE_REPLY, intent=intent, entity=entity)
+            return PreprocessResult(direct_reply=await self._clarify_reply(user_message, user_role, entity),
+                                    intent=intent, entity=entity)
+
+        # 2.1 槽位状态机（start_operation + leave）
+        if intent.intent == "start_operation" and entity and entity.get("type") == "leave":
+            result = await self._slot_filler.handle(session_id, user_message, intent.intent, entity)
+            if isinstance(result, str):
+                return PreprocessResult(direct_reply=result, intent=intent, entity=entity)
+            if isinstance(result, dict):
+                return PreprocessResult(slot_result=result, intent=intent, entity=entity, tools=tools)
+
+        if intent.intent == "general_chat" and not matched_skill:
+            return PreprocessResult(direct_reply=await self._direct_reply(user_message, user_role, entity),
+                                    intent=intent, entity=entity)
+
+        if not tools:
+            return PreprocessResult(direct_reply=await self._direct_reply_with_skill(
+                user_message, user_role, matched_skill, entity), intent=intent, entity=entity)
+
+        return PreprocessResult(tools=tools, intent=intent, matched_skill=matched_skill, entity=entity)
+
+    async def _clarify_reply(self, user_message, user_role, entity=None):
+        system_text = self._build_system_text(user_role, entity)
+        system_text += "\n用户输入意图不明确，请生成一句简短澄清问句，引导用户更明确表达。"
+        resp = await self._llm.ainvoke([
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_message},
+        ])
+        return resp.content
 
     def _trace_metadata(
         self, session_id: str, user_id: int, user_role: str, intent: IntentResult,
