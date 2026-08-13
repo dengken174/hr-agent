@@ -13,6 +13,7 @@ from agent.prompts import INTENT_CLASSIFICATION_PROMPT
 class IntentResult:
     intent: str
     entity: dict = field(default_factory=dict)
+    confidence: float = 1.0
 
 
 INTENT_LABELS = frozenset({
@@ -23,7 +24,26 @@ INTENT_LABELS = frozenset({
     "start_operation",
     "approval_action",
     "general_chat",
+    "out_of_scope",
 })
+
+OUT_OF_SCOPE_REPLY = (
+    "这个问题超出了我的职责范围。我是 HR 助手，可以帮你处理：\n"
+    "- 查询个人信息（薪资、考勤、假期余额）\n"
+    "- 了解公司制度、福利政策、流程\n"
+    "- 发起请假/报销等申请、审批\n\n"
+    "其他问题建议联系 HR BP 或相关部门。"
+)
+
+CONFIDENCE_THRESHOLD = 0.6
+
+
+def should_refuse(intent: IntentResult) -> bool:
+    if intent.intent == "out_of_scope":
+        return True
+    if intent.confidence < CONFIDENCE_THRESHOLD and intent.intent != "general_chat":
+        return True
+    return False
 
 
 class IntentClassifier:
@@ -53,12 +73,13 @@ class IntentClassifier:
         parsed = self._extract_json(raw)
         intent = parsed.get("intent", "general_chat")
         entity = parsed.get("entity", {})
+        confidence = float(parsed.get("confidence", 1.0))
 
         if intent not in INTENT_LABELS:
             intent = "general_chat"
             entity = {}
 
-        return IntentResult(intent=intent, entity=entity)
+        return IntentResult(intent=intent, entity=entity, confidence=confidence)
 
     @staticmethod
     def _extract_json(raw: str) -> dict[str, Any]:

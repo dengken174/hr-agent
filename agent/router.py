@@ -53,6 +53,7 @@ INTENT_TOOL_MAP: dict[str, list[str]] = {
         "approval_get_approval_detail",
     ],
     "general_chat": [],
+    "out_of_scope": [],
 }
 
 # ── Intent + Entity.type → 更窄的 Tool 子集（entity-aware 二级路由）────

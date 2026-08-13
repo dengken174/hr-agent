@@ -54,6 +54,14 @@ INTENT_FEWSHOT_EXAMPLES = """
 ## 示例 7
 用户: "你好"
 输出: {"intent": "general_chat", "entity": {}}
+
+## 示例 8
+用户: "帮我订张明天去北京的机票"
+输出: {"intent": "out_of_scope", "entity": {}, "confidence": 0.95}
+
+## 示例 9
+用户: "我最近咳嗽，吃什么药好"
+输出: {"intent": "out_of_scope", "entity": {}, "confidence": 0.9}
 """
 
 
@@ -67,6 +75,7 @@ INTENT_CLASSIFICATION_PROMPT = f"""分析用户输入，输出 JSON 格式的意
 - start_operation: 发起申请或操作（请假、报销、福利申请等）
 - approval_action: 审批操作（通过、驳回、查看审批列表）
 - general_chat: 闲聊、打招呼、与 HR 无关的问题
+- out_of_scope: 与 HR 无关、超出助手能力的问题（医疗、法律、订票、点外卖等）
 
 ## entity.type 可选值（按意图分组）
 - search_own_info: salary | attendance | leave_balance | calendar | task | profile
@@ -79,7 +88,7 @@ INTENT_CLASSIFICATION_PROMPT = f"""分析用户输入，输出 JSON 格式的意
 
 ## 输出格式
 严格输出 JSON，不要加任何额外文字：
-{{"intent": "<intent_name>", "entity": {{"type": "<entity_type>", ...}}}}
+{{"intent": "<intent_name>", "entity": {{"type": "<entity_type>", ...}}, "confidence": 0.0~1.0}}
 
 {INTENT_FEWSHOT_EXAMPLES}
 
