@@ -86,3 +86,19 @@ INTENT_CLASSIFICATION_PROMPT = f"""分析用户输入，输出 JSON 格式的意
 现在，分析以下用户输入：
 用户: {{user_message}}
 """
+
+
+SLOT_EXTRACTION_PROMPT = """从用户消息中提取以下槽位的值，输出 JSON。
+
+缺失的槽位: {missing_keys}
+
+规则：
+- 只提取缺失槽位的值
+- 日期用 ISO 格式（YYYY-MM-DD），「下周一」「明天」等解析为具体日期
+- 提取不到的槽位不要输出
+
+输出格式（严格 JSON，无额外文字）：
+{{"<slot_key>": "<value>"}}
+
+用户消息: {user_message}
+"""

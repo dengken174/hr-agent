@@ -21,3 +21,4 @@ faster-whisper>=1.0.0
 markitdown>=0.1.0
 paddleocr>=2.9.0
 langsmith>=0.1.0
+dateparser>=1.2.0
