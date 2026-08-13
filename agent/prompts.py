@@ -74,7 +74,7 @@ INTENT_CLASSIFICATION_PROMPT = f"""分析用户输入，输出 JSON 格式的意
 - process_query: 询问某个流程怎么操作
 - start_operation: 发起申请或操作（请假、报销、福利申请等）
 - approval_action: 审批操作（通过、驳回、查看审批列表）
-- general_chat: 闲聊、打招呼、与 HR 无关的问题
+- general_chat: 闲聊、打招呼
 - out_of_scope: 与 HR 无关、超出助手能力的问题（医疗、法律、订票、点外卖等）
 
 ## entity.type 可选值（按意图分组）
