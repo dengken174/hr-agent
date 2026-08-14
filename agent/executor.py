@@ -17,6 +17,8 @@ from agent.prompts import HR_SYSTEM_PROMPT
 from agent.router import route_tools
 from agent.skill_manager import CustomSkill, skill_manager
 from agent.slot_filler import SlotFiller
+from db.scope import DataScope, authorize
+from db.audit import audit_repo
 
 logger = logging.getLogger(__name__)
 
@@ -53,28 +55,31 @@ _WRITE_TOOLS = {
 _pending_confirmations: dict[str, dict[str, Any]] = {}
 
 
-def _apply_identity_guard(
-    tools: list[BaseTool], user_id: int, user_role: str
-) -> list[BaseTool]:
-    """非 admin 用户强制 identity 参数（employee_id 等）= user_id，防止越权查询他人数据。"""
-    if user_role == "hr_admin":
-        return tools
-
+def _apply_scope_guard(tools: list[BaseTool], scope: DataScope, audit) -> list[BaseTool]:
+    """身份绑定（保留）+ 权限判定（新增）+ 审计（新增）。"""
     wrapped = []
     for t in tools:
         _orig_arun = t._arun
 
-        async def _guarded(**kwargs: Any) -> Any:
-            for param in _IDENTITY_PARAMS:
-                if param in kwargs:
-                    logger.warning(
-                        "Identity guard: overriding %s from %s to user_id=%s",
-                        param, kwargs[param], user_id,
-                    )
-                    kwargs[param] = user_id
-            return await _orig_arun(**kwargs)
+        def _make_guarded(orig, tname):
+            async def _guarded(**kwargs: Any) -> Any:
+                # 1. 身份绑定（保留现有行为）：非 admin 强制 identity 参数 = user_id
+                if scope.role != "hr_admin":
+                    for param in _IDENTITY_PARAMS:
+                        if param in kwargs:
+                            kwargs[param] = scope.user_id
+                # 2. 权限判定：查别人工具，越权拒绝 + 审计
+                action = tname.split("_", 1)[-1] if "_" in tname else tname
+                if not authorize(scope, tname, kwargs):
+                    await audit.record(scope.user_id, scope.role, action, "denied", dict(kwargs))
+                    return "⚠️ 你没有权限执行此操作"
+                # 3. 执行 + 审计成功
+                result = await orig(**kwargs)
+                await audit.record(scope.user_id, scope.role, action, "success", dict(kwargs))
+                return result
+            return _guarded
 
-        t._arun = _guarded
+        t._arun = _make_guarded(_orig_arun, t.name)
         wrapped.append(t)
 
     return wrapped
@@ -256,8 +261,9 @@ class HRAgent:
             result = await tool._arun(**slot_args)
             return result
 
-        # 6. 身份绑定：非 admin 用户强制 identity 参数 = user_id
-        tools = _apply_identity_guard(tools, user_id, user_role)
+        # 6. 数据访问控制：身份绑定 + 权限判定 + 审计
+        scope = DataScope(user_id=user_id, role=user_role)
+        tools = _apply_scope_guard(tools, scope, audit_repo)
 
         # 6.5 写入工具确认守卫
         tools = _apply_confirmation_guard(tools, session_id)
@@ -340,8 +346,9 @@ class HRAgent:
                 yield result
             return
 
-        # 4.5 身份绑定：非 admin 用户强制 identity 参数 = user_id
-        tools = _apply_identity_guard(tools, user_id, user_role)
+        # 4.5 数据访问控制：身份绑定 + 权限判定 + 审计
+        scope = DataScope(user_id=user_id, role=user_role)
+        tools = _apply_scope_guard(tools, scope, audit_repo)
 
         # 4.6 写入工具确认守卫
         tools = _apply_confirmation_guard(tools, session_id)
