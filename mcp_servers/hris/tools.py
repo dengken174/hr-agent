@@ -4,6 +4,7 @@ from typing import Any
 import mcp.types as types
 
 from mcp_servers.hris import server_name
+from db.scope import mask_salary
 
 # ── 模拟员工数据 ──────────────────────────────────────────────────────
 
@@ -100,10 +101,11 @@ async def get_my_salary(employee_id: int) -> list[types.TextContent]:
 
 
 async def get_team_members(dept: str) -> list[types.TextContent]:
-    """HR 查看管辖范围内的员工列表。"""
+    """HR 查看管辖范围内的员工列表（薪资以区间脱敏展示）。"""
     members = [{
         "id": e["id"], "name": e["name"], "title": e["title"],
         "onboard_date": e["onboard_date"], "level": e["level"],
+        "salary_range": mask_salary(e["salary"], "list"),
     } for e in MOCK_EMPLOYEES if dept in e["dept"]]
     return [types.TextContent(type="text", text=str(members))]
 
