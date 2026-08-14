@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import aiomysql
 from db.connection import get_pool
+from db.scope import DataScope
 
 logger = logging.getLogger(__name__)
 
@@ -116,14 +117,23 @@ class ConversationRepo:
 
 
 class ApprovalRepo:
-    async def list_all(self, status: str = "") -> list[dict]:
+    async def list_all(self, status: str = "", scope: DataScope | None = None) -> list[dict]:
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
+                where = []
+                params = []
                 if status:
-                    await cur.execute("SELECT * FROM approval_requests WHERE status = %s ORDER BY created_at DESC", (status,))
-                else:
-                    await cur.execute("SELECT * FROM approval_requests ORDER BY created_at DESC")
+                    where.append("status = %s")
+                    params.append(status)
+                if scope and scope.role == "employee":
+                    where.append("applicant_id = %s")
+                    params.append(scope.user_id)
+                where_clause = (" WHERE " + " AND ".join(where)) if where else ""
+                await cur.execute(
+                    f"SELECT * FROM approval_requests{where_clause} ORDER BY created_at DESC",
+                    tuple(params),
+                )
                 rows = await cur.fetchall()
                 for r in rows:
                     if isinstance(r.get("body"), str):

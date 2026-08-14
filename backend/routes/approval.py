@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from backend.middleware import get_current_user
 from backend.models import ApprovalAction, ApprovalItem
 from db.repositories import ApprovalRepo, UserRepo
+from db.scope import DataScope
 
 logger = logging.getLogger("backend.routes.approval")
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
@@ -126,17 +127,17 @@ async def list_approvals(
     user: dict = Depends(get_current_user),
 ):
     """查询审批列表，可按状态过滤。"""
+    scope = DataScope(user_id=user["user_id"], role=user["role"])
     try:
-        rows = await _approval_repo.list_all(status)
+        rows = await _approval_repo.list_all(status, scope)
         items = [_to_approval_item(r) for r in rows]
     except Exception:
         logger.warning("MySQL unavailable, falling back to mock")
         items = MOCK_APPROVALS
         if status:
             items = [a for a in items if a["status"] == status]
-
-    if user["role"] == "employee":
-        items = [a for a in items if a["applicant_id"] == user["user_id"]]
+        if scope.role == "employee":
+            items = [a for a in items if a["applicant_id"] == scope.user_id]
 
     return [ApprovalItem(**a) for a in items]
 
