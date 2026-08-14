@@ -69,3 +69,17 @@ CREATE TABLE IF NOT EXISTS knowledge_docs (
     updated_at  DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     created_at  DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 审计日志（通用数据访问审计）
+CREATE TABLE IF NOT EXISTS audit_log (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id       INT NOT NULL,
+    user_role     VARCHAR(16) NOT NULL,
+    action        VARCHAR(50) NOT NULL,
+    resource_type VARCHAR(50) DEFAULT '',
+    resource_id   VARCHAR(50) DEFAULT '',
+    detail        JSON DEFAULT NULL,
+    result        ENUM('success','denied','masked') NOT NULL,
+    created_at    DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX idx_user (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
