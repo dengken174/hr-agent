@@ -111,6 +111,12 @@ class Config:
     feishu: FeishuConfig = field(default_factory=FeishuConfig)
     langsmith: LangSmithConfig = field(default_factory=LangSmithConfig)
     agent_max_iterations: int = 6
+    request_max_steps: int = 30
+    request_max_llm_calls: int = 12
+    request_max_seconds: int = 60
+    collect_max_rounds: int = 5
+    confirm_timeout_seconds: int = 86400
+    messages_max: int = 20
     memory_max_token_limit: int = 4000
     approval_timeout_hours: int = 48
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
