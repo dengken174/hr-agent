@@ -22,3 +22,5 @@ markitdown>=0.1.0
 paddleocr>=2.9.0
 langsmith>=0.1.0
 dateparser>=1.2.0
+# langgraph-checkpoint-redis 可选：AGENT_CHECKPOINTER=redis 时另需安装
+langgraph>=1.1.10

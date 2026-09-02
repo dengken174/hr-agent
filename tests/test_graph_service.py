@@ -152,3 +152,19 @@ def test_run_turn_suspend_then_new_message_drops_pending():
 def test_run_turn_fresh_input_resets_budget_counters():
     inp = svc._fresh_input("hi")
     assert inp["steps"] == 0 and inp["llm_calls"] == 0 and inp["started_at"] > 0
+
+
+def test_engine_mode_env(monkeypatch):
+    from agent.graph_engine import engine_mode
+    monkeypatch.setenv("AGENT_ENGINE", "legacy")
+    assert engine_mode() == "legacy"
+    monkeypatch.setenv("AGENT_ENGINE", "graph")
+    assert engine_mode() == "graph"
+
+
+def test_import_executor_smoke():
+    from agent.executor import HRAgent
+    assert hasattr(HRAgent, "chat")
+    assert hasattr(HRAgent, "chat_stream")
+    assert hasattr(HRAgent, "_deps_graph")
+    assert hasattr(HRAgent, "_build_read_executor")

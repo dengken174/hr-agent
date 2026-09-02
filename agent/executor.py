@@ -205,6 +205,7 @@ class HRAgent:
         )
         self._mcp_client: MultiServerMCPClient | None = None
         self._all_tools: list[BaseTool] = []
+        self._graph_checkpointer = None
         self._slot_filler = SlotFiller()
 
     # ── 生命周期 ─────────────────────────────────────────────────
@@ -230,7 +231,29 @@ class HRAgent:
 
     # ── 核心调用 ─────────────────────────────────────────────────
 
-    async def chat(
+    async def chat(self, user_message, session_id="default", user_id=0, user_role="employee") -> str:
+        """入口：按 AGENT_ENGINE 分发 LangGraph(graph) / 经典 AgentExecutor(legacy)。"""
+        skill_manager.check_reload()
+        from agent.graph_engine import engine_mode
+        if engine_mode() == "graph":
+            return await self._chat_graph(user_message, session_id, user_id, user_role)
+        return await self._chat_legacy(user_message, session_id, user_id, user_role)
+
+    async def chat_stream(self, user_message, session_id="default", user_id=0, user_role="employee") -> AsyncIterator[str]:
+        """入口：graph 聚合整句产出；legacy 逐 token（token 级细化列 spec §12 可选）。"""
+        skill_manager.check_reload()
+        from agent.graph_engine import engine_mode
+        if engine_mode() == "graph":
+            yield await self._chat_graph(user_message, session_id, user_id, user_role)
+            return
+        async for chunk in self._chat_stream_legacy(user_message, session_id, user_id, user_role):
+            yield chunk
+
+    async def _chat_graph(self, user_message, session_id, user_id, user_role) -> str:
+        from agent.graph_engine.service import run_turn
+        return await run_turn(self, user_message, session_id, user_id, user_role)
+
+    async def _chat_legacy(
         self,
         user_message: str,
         session_id: str = "default",
@@ -239,7 +262,6 @@ class HRAgent:
     ) -> str:
         """完整对话链路，返回最终回复文本。"""
         # 0. 热加载 Skill（检测文件变化）
-        skill_manager.check_reload()
 
         # 1~5. 前置处理：意图分类 + 路由 + skill 匹配 + 拒答 + 槽位
         pre = await self._preprocess(user_message, session_id, user_id, user_role)
@@ -311,7 +333,7 @@ class HRAgent:
 
         return output
 
-    async def chat_stream(
+    async def _chat_stream_legacy(
         self,
         user_message: str,
         session_id: str = "default",
@@ -320,7 +342,6 @@ class HRAgent:
     ) -> AsyncIterator[str]:
         """流式对话 — 逐 token 产出回复。"""
         # 0. 热加载 Skill
-        skill_manager.check_reload()
 
         # 前置处理：意图分类 + 路由 + skill 匹配 + 拒答 + 槽位
         pre = await self._preprocess(user_message, session_id, user_id, user_role)
@@ -399,6 +420,60 @@ class HRAgent:
         )
 
     # ── 内部方法 ─────────────────────────────────────────────────
+
+    def _get_graph_checkpointer(self):
+        if self._graph_checkpointer is None:
+            from agent.graph_engine.checkpointer import get_checkpointer
+            self._graph_checkpointer = get_checkpointer()
+        return self._graph_checkpointer
+
+    def _deps_graph(self, session_id, user_id, user_role):
+        """装配 LangGraph run_turn 所需 deps。写通道/读通道均从 self._all_tools(MCP) 取工具。"""
+        async def classify(text):
+            return await intent_classifier.classify(text)
+
+        async def extract_slots(text, slots_def, excerpt=None):
+            from agent.slot_filler import _llm_extract_slots
+            missing = [d["key"] for d in slots_def if d.get("required")]
+            return await _llm_extract_slots("", text, missing)
+
+        def llm_invoke(text):
+            return self._direct_reply(text, user_role)
+
+        def read_factory(intent, entity, scope, chat_history):
+            return self._build_read_executor(intent, entity, scope, chat_history)
+
+        def write_tool(name):
+            return next((t for t in self._all_tools if t.name == name), None)
+
+        return {
+            "classify": classify,
+            "extract_slots": extract_slots,
+            "llm_invoke": llm_invoke,
+            "read_factory": read_factory,
+            "write_tool": write_tool,
+            "all_tools": self._all_tools,
+            "archive": self._memory_mgr.save_archive,
+            "checkpointer": self._get_graph_checkpointer(),
+            "out_of_scope_reply": OUT_OF_SCOPE_REPLY,
+        }
+
+    def _build_read_executor(self, intent, entity, scope, chat_history):
+        """读通道执行器：route_tools 剔除写工具(fail-closed) + scope guard + 无 memory。
+        chat_history 参数按图 execute_read 契约接收，但实际历史经 invoke 的 input 传入。"""
+        from agent.graph_engine import WRITE_TOOLS
+        ir = IntentResult(intent=intent, entity=entity)
+        tools = [t for t in route_tools(ir, self._all_tools) if t.name not in WRITE_TOOLS]
+        tools = _apply_scope_guard(tools, scope, audit_repo)
+        prompt = self._build_prompt_with_skill(scope.role, None, entity)
+        agent = create_tool_calling_agent(llm=self._llm, tools=tools, prompt=prompt)
+        return AgentExecutor(
+            agent=agent,
+            tools=tools,
+            max_iterations=config.agent_max_iterations,
+            verbose=False,
+            handle_parsing_errors=True,
+        )
 
     async def _preprocess(self, user_message, session_id, user_id, user_role):
         # 槽位状态机接管：优先于意图分类（确认词/槽位中间回答会被判成 general_chat）
