@@ -16,12 +16,16 @@ LEAVE_SLOTS = [
 # 意图 → 槽位定义映射（本次仅请假）
 SLOT_DEFS = {"leave": LEAVE_SLOTS}
 
+# 意图类型 → 写工具名（供 write 通道复用）
+SLOT_DEF_TOOL = {"leave": "feishu_submit_leave_request"}
+
 
 @dataclass
 class SlotState:
     intent: str
     slots: dict = field(default_factory=dict)
     missing: list = field(default_factory=list)
+    tool: str | None = None
 
 
 def init_state(intent: str, slots_def: list) -> SlotState:
@@ -78,18 +82,27 @@ class SlotFiller:
         if state.missing:
             return next_ask(slots_def, state.missing[0])
 
-        self._pending_confirms[session_id] = dict(state.slots)
+        self._pending_confirms[session_id] = {
+            "slots": dict(state.slots),
+            "tool": SLOT_DEF_TOOL.get(entity.get("type", ""), ""),
+        }
         del self._sessions[session_id]
         return confirm_summary(slots_def, state.slots)
 
+    def store_pending(self, session_id: str, slots: dict, tool: str):
+        self._pending_confirms[session_id] = {"slots": slots, "tool": tool}
+
+    def pop_pending(self, session_id: str) -> dict | None:
+        return self._pending_confirms.pop(session_id, None)
+
     def consume(self, session_id: str, user_message: str) -> str | dict | None:
-        """处理二次确认。返回确认后的 tool dict / 取消文本 / None（当作新消息，丢弃 pending）。"""
-        if session_id not in self._pending_confirms:
+        """处理二次确认。返回 confirm dict / 取消文本 / None（当作新消息，丢弃 pending）。"""
+        pending = self.pop_pending(session_id)
+        if pending is None:
             return None
-        stored_slots = self._pending_confirms.pop(session_id)
         msg = user_message.strip()
         if msg in {"确认", "confirm", "yes", "是", "好的", "可以", "ok"}:
-            return {"tool": "feishu_submit_leave_request", "args": stored_slots}
+            return {"action": "confirm", "tool": pending["tool"], "args": pending["slots"]}
         if msg in {"取消", "cancel", "no", "否", "不要", "算了"}:
             return "已取消操作。"
         return None
