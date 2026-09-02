@@ -225,6 +225,11 @@ class MemoryManager:
         await self._chat_history.save_message(session_id, user_id, "user", user_message, intent, tool_calls)
         await self._chat_history.save_message(session_id, user_id, "assistant", assistant_message, intent, tool_calls)
 
+    async def save_archive(self, session_id, user_id, user_message, assistant_message, intent=""):
+        """仅写 MySQL（append-only 审计/冷档），不经 Redis 缓冲（graph 路径专用）。"""
+        await self._chat_history.save_message(session_id, user_id, "user", user_message, intent)
+        await self._chat_history.save_message(session_id, user_id, "assistant", assistant_message, intent)
+
     async def clear_session(self, session_id: str):
         await self._session_buffer.clear(session_id)
 
