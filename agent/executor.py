@@ -467,6 +467,11 @@ class HRAgent:
         ir = IntentResult(intent=intent, entity=entity)
         tools = [t for t in route_tools(ir, self._all_tools) if t.name not in WRITE_TOOLS]
         matched_skill = skill_manager.match(user_input) if user_input else None
+        # skill 命中含写工具（如发邮件/写表格）时整体不注入：读通道 fail-closed 无该写工具，
+        # 其 system_prompt 会诱导模型调用一个不存在的工具（幻觉）。这类流程本质是写，走写通道。
+        if matched_skill and matched_skill.tools and any(
+                tn in WRITE_TOOLS for tn in matched_skill.tools):
+            matched_skill = None
         if matched_skill and matched_skill.tools:
             all_names = {t.name for t in self._all_tools}
             skill_tool_names = skill_manager.get_tool_names(matched_skill, all_names)

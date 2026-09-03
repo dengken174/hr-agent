@@ -12,7 +12,9 @@ from langgraph.types import interrupt
 from agent.intent import should_refuse
 from agent.graph_engine.state import HRGraphState
 from agent.graph_engine.budget import assert_budget
-from agent.graph_engine.write_slots import resolve_write_tool, slots_defs_for, authorize_write
+from agent.graph_engine.write_slots import (
+    resolve_write_tool, slots_defs_for, authorize_write, bind_identity_params,
+)
 from db.scope import DataScope
 
 _OUT_OF_SCOPE_FALLBACK = "抱歉，这个问题超出我的职责范围，请咨询 HR BP 或换一种说法。"
@@ -126,9 +128,13 @@ def make_graph(deps, identity):
             return d
         return {**d, "final_node": "validate"}
 
+    def _write_tool(name):
+        return deps.get("write_tool")(name) if deps.get("write_tool") else None
+
     async def validate_write(state):
         args = dict(state.get("pending_args") or {})
-        args.setdefault("employee_id", str(identity["user_id"]))
+        bind_identity_params(_write_tool(state.get("pending_tool")), args,
+                             identity["user_id"], identity["user_role"])
         scope = DataScope(user_id=identity["user_id"], role=identity["user_role"])
         if not authorize_write(scope, state.get("pending_tool"), args):
             return {**_tick(state), "reply": "无权执行该操作。", "final_node": "denied",
@@ -138,11 +144,11 @@ def make_graph(deps, identity):
 
     async def execute_write(state):
         _gate(state)
-        tool = deps["write_tool"](state.get("pending_tool"))
-        args = dict(state.get("pending_args") or {})
-        args.setdefault("employee_id", str(identity["user_id"]))
+        tool = _write_tool(state.get("pending_tool"))
         if tool is None:
             return {"reply": "该工具暂不可用，请联系 HR BP。", "final_node": "error"}
+        args = dict(state.get("pending_args") or {})
+        bind_identity_params(tool, args, identity["user_id"], identity["user_role"])
         try:
             out = await tool._arun(**args)
         except Exception as e:  # 单步失败给可读错误，不中断会话
