@@ -32,6 +32,17 @@ def test_authorize_write_leave_binds_self():
     hr = DataScope(user_id=1, role="hr_admin")
     assert ws.authorize_write(hr, "feishu_submit_leave_request", {"employee_id": "8"}) is True
 
+def test_authorize_write_start_approval_self_or_hr_admin():
+    emp = DataScope(user_id=7, role="employee")
+    # 发起审批：员工可为自己发起（对齐 legacy db.scope.authorize 全放行），他人/他单由 hr_admin 行使
+    assert ws.authorize_write(emp, "approval_start_approval", {"employee_id": "7"}) is True
+    assert ws.authorize_write(emp, "approval_start_approval", {"employee_id": "8"}) is False
+    hr = DataScope(user_id=1, role="hr_admin")
+    assert ws.authorize_write(hr, "approval_start_approval", {"employee_id": "8"}) is True
+    # approve/reject 仍限 hr_admin（golden case 10 契约）
+    assert ws.authorize_write(emp, "approval_approve_request", {"employee_id": "7"}) is False
+    assert ws.authorize_write(hr, "approval_approve_request", {"employee_id": "8"}) is True
+
 def test_slots_defs_for_leave_override():
     from langchain_core.tools import BaseTool, tool
     @tool

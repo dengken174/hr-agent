@@ -16,6 +16,8 @@ WRITE_OVERRIDE_DEFS: dict[str, list] = {
 }
 
 _WRITE_APPROVAL = {"approval_approve_request", "approval_reject_request", "approval_start_approval"}
+# 员工可为本人发起的写操作（employee_id==self 或 hr_admin）；区别于审批 approve/reject（仅 hr_admin）
+_WRITE_SELF_BOUND = {"feishu_submit_leave_request", "approval_start_approval"}
 
 
 def derive_slots_defs(tool) -> list:
@@ -63,7 +65,8 @@ def resolve_write_tool(intent: str, entity: dict | None, available: set[str]) ->
 
 
 def authorize_write(scope: DataScope, tool_name: str, args: dict) -> bool:
-    if tool_name == "feishu_submit_leave_request":
+    # 员工可为本人发起的操作（请假 / 发起审批）：employee_id 由 validate_write 注入本人，或 hr_admin 代行使
+    if tool_name in _WRITE_SELF_BOUND:
         return int(args.get("employee_id", 0)) == scope.user_id or scope.role == "hr_admin"
     if tool_name in _WRITE_APPROVAL:
         return scope.role in {"hr_admin"}
