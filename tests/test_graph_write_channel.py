@@ -50,7 +50,7 @@ def _deps(log, extract_leave=True, collect_max_rounds=5):
             return {"output": "read", "chat_history": [], "agent_scratchpad": []}
 
     return {"classify": classify, "extract_slots": extract, "llm_invoke": llm,
-            "read_factory": lambda intent, entity, scope, chat_history: E(),
+            "read_factory": lambda intent, entity, scope, chat_history, user_input="": E(),
             "all_tools": [leave],
             "write_tool": lambda name: leave if name == "feishu_submit_leave_request" else None,
             "audit": None, "archive": None,

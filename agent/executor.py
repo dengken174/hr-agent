@@ -440,8 +440,8 @@ class HRAgent:
         def llm_invoke(text):
             return self._direct_reply(text, user_role)
 
-        def read_factory(intent, entity, scope, chat_history):
-            return self._build_read_executor(intent, entity, scope, chat_history)
+        def read_factory(intent, entity, scope, chat_history, user_input=""):
+            return self._build_read_executor(intent, entity, scope, chat_history, user_input)
 
         def write_tool(name):
             return next((t for t in self._all_tools if t.name == name), None)
@@ -458,14 +458,26 @@ class HRAgent:
             "out_of_scope_reply": OUT_OF_SCOPE_REPLY,
         }
 
-    def _build_read_executor(self, intent, entity, scope, chat_history):
+    def _build_read_executor(self, intent, entity, scope, chat_history, user_input=""):
         """读通道执行器：route_tools 剔除写工具(fail-closed) + scope guard + 无 memory。
-        chat_history 参数按图 execute_read 契约接收，但实际历史经 invoke 的 input 传入。"""
+        chat_history 参数按图 execute_read 契约接收，但实际历史经 invoke 的 input 传入。
+        user_input 用于恢复图引擎下的 skill 增强读（skill 只读工具 + 系统提示），与 legacy
+        _preprocess 的 skill 合并保持一致；skill 命中里的写工具不放进来（写走写通道 fail-closed）。"""
         from agent.graph_engine import WRITE_TOOLS
         ir = IntentResult(intent=intent, entity=entity)
         tools = [t for t in route_tools(ir, self._all_tools) if t.name not in WRITE_TOOLS]
+        matched_skill = skill_manager.match(user_input) if user_input else None
+        if matched_skill and matched_skill.tools:
+            all_names = {t.name for t in self._all_tools}
+            skill_tool_names = skill_manager.get_tool_names(matched_skill, all_names)
+            skill_tools = [t for t in self._all_tools
+                           if t.name in skill_tool_names and t.name not in WRITE_TOOLS]
+            existing = {t.name for t in tools}
+            for st in skill_tools:
+                if st.name not in existing:
+                    tools.append(st)
         tools = _apply_scope_guard(tools, scope, audit_repo)
-        prompt = self._build_prompt_with_skill(scope.role, None, entity)
+        prompt = self._build_prompt_with_skill(scope.role, matched_skill, entity)
         agent = create_tool_calling_agent(llm=self._llm, tools=tools, prompt=prompt)
         return AgentExecutor(
             agent=agent,

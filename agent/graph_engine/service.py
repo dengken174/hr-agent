@@ -32,8 +32,12 @@ def is_suspended(g, cfg) -> bool:
 
 
 def _fresh_input(user_message: str) -> dict:
-    # 预算按请求而非线程累计：started_at/steps/llm_calls 为普通字段，输入覆盖即重置
-    return {"user_input": user_message, "started_at": time.time(), "steps": 0, "llm_calls": 0}
+    # 预算按请求而非线程累计：started_at/steps/llm_calls 为普通字段，输入覆盖即重置。
+    # final_node/reply 是上一轮终局残留，若不清空，route_after_intent 会把新一轮 read
+    # 误路由去上一轮的 refuse/general 节点（跨轮 stale-final_node bug）。collecting/slots
+    # 保持线程态：槽位续填靠它们跨轮续存，此处不得重置。
+    return {"user_input": user_message, "started_at": time.time(), "steps": 0, "llm_calls": 0,
+            "final_node": "", "reply": ""}
 
 
 async def _archive(deps, session_id, user_id, user_message, reply, intent=""):

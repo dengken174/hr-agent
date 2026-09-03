@@ -38,7 +38,7 @@ def _deps(intent=None, entity=None, direct=False):
 
     return {"classify": classify, "llm_invoke": llm,
             "skill_for": lambda text: None,
-            "read_factory": lambda intent, entity, scope, chat_history: E(),
+            "read_factory": lambda intent, entity, scope, chat_history, user_input="": E(),
             "all_tools": [DummyRead()],
             "write_tool": lambda name: None,
             "audit": None,

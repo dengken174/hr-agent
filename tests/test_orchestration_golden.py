@@ -67,7 +67,7 @@ def _deps(log, *, intent, entity, confidence=1.0, extract=None, read_output="rea
         "classify": classify,
         "extract_slots": extract_slots,
         "llm_invoke": llm,
-        "read_factory": lambda intent, entity, scope, chat_history: _Read(),
+        "read_factory": lambda intent, entity, scope, chat_history, user_input="": _Read(),
         "all_tools": tools,
         "write_tool": lambda name: next((t for t in tools if t.name == name), None),
     }

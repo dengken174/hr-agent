@@ -64,7 +64,7 @@ class _Core:
                 return {"output": "read-answer", "chat_history": [], "agent_scratchpad": []}
 
         return {"classify": classify, "extract_slots": extract, "llm_invoke": llm,
-                "read_factory": lambda intent, entity, scope, chat_history: E(),
+                "read_factory": lambda intent, entity, scope, chat_history, user_input="": E(),
                 "all_tools": [leave],
                 "write_tool": lambda name: leave if name == "feishu_submit_leave_request" else None,
                 "checkpointer": self.saver,
@@ -149,9 +149,35 @@ def test_run_turn_suspend_then_new_message_drops_pending():
     assert core.archive_calls[-1][0] == "我工资多少"
 
 
-def test_run_turn_fresh_input_resets_budget_counters():
+def test_run_turn_fresh_turn_read_not_misrouted_by_stale_general_final_node():
+    """回归：general/refuse 终局把 final_node 留在 thread state；fresh read turn 若在 _fresh_input
+    未重置，route_after_intent 会读到上一轮 stale final_node="general"，把查询误路由去 general。"""
+    core = _Core()
+
+    async def classify(text):
+        if "你好" in text:
+            return IntentResult(intent="general_chat", entity={})
+        return IntentResult(intent="search_own_info", entity={"type": "salary"})
+
+    orig = core._deps_graph
+
+    def deps_graph(session_id, user_id, user_role):
+        deps = orig(session_id, user_id, user_role)
+        deps["classify"] = classify
+        return deps
+
+    core._deps_graph = deps_graph
+    r1 = run(svc.run_turn(core, "你好，介绍一下自己", "s1", 7, "employee"))
+    assert r1 == "hi"  # general 走 llm_invoke
+    r2 = run(svc.run_turn(core, "我这个月工资多少", "s1", 7, "employee"))
+    assert r2 == "read-answer"  # 应走 execute_read，而非被 stale final_node 送去 general
+    assert [c[0] for c in core.archive_calls] == ["你好，介绍一下自己", "我这个月工资多少"]
+
+
+def test_fresh_input_resets_terminal_fields():
     inp = svc._fresh_input("hi")
     assert inp["steps"] == 0 and inp["llm_calls"] == 0 and inp["started_at"] > 0
+    assert inp["final_node"] == "" and inp["reply"] == ""
 
 
 def test_engine_mode_env(monkeypatch):

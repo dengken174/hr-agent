@@ -68,7 +68,8 @@ def make_graph(deps, identity):
         _gate(state)
         scope = DataScope(user_id=identity["user_id"], role=identity["user_role"])
         chat_hist = list(state["messages"][:-1])
-        ex = deps["read_factory"](state["intent"], state["entity"], scope, chat_hist)
+        ex = deps["read_factory"](state["intent"], state["entity"], scope, chat_hist,
+                                  state.get("user_input", ""))
         res = await ex.ainvoke({"chat_history": chat_hist, "input": state["user_input"]})
         text = str(res.get("output", ""))
         return {**_tick(state), "reply": text, "final_node": "execute_read",
