@@ -482,15 +482,13 @@ class HRAgent:
                 if st.name not in existing:
                     tools.append(st)
         tools = _apply_scope_guard(tools, scope, audit_repo)
-        prompt = self._build_prompt_with_skill(scope.role, matched_skill, entity)
-        agent = create_tool_calling_agent(llm=self._llm, tools=tools, prompt=prompt)
-        return AgentExecutor(
-            agent=agent,
-            tools=tools,
-            max_iterations=config.agent_max_iterations,
-            verbose=False,
-            handle_parsing_errors=True,
-        )
+        system_text = self._build_system_text(scope.role, entity)
+        if matched_skill:
+            system_text += f"\n\n## 自定义业务技能: {matched_skill.display_name}\n{matched_skill.system_prompt}"
+        from agent.graph_engine.read_loop import ReadExecutor, build_read_graph
+        graph = build_read_graph(self._llm, tools, system_text)
+        # recursion_limit 对齐原 AgentExecutor max_iterations（agent+tools 每轮约 2 步）
+        return ReadExecutor(graph, recursion_limit=config.agent_max_iterations * 2 + 2)
 
     async def _preprocess(self, user_message, session_id, user_id, user_role):
         # 槽位状态机接管：优先于意图分类（确认词/槽位中间回答会被判成 general_chat）
